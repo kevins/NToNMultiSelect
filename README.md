@@ -4,7 +4,9 @@ A Power Apps component framework (PCF) field control for model-driven apps. It e
 relationship** and looks and behaves like the platform's own **multi-select choice** field, so a form can offer related
 records the same way it offers choices.
 
-![N:N Multi-Select with its list open](docs/images/list-select-all.png)
+![N:N Multi-Select in action: picking, searching, subgrids in sync and the settings](docs/gallery/NToNMultiSelect-demo.gif)
+
+The same demo as a [video (MP4)](docs/gallery/NToNMultiSelect-demo.mp4).
 
 | Item | Value |
 | --- | --- |
