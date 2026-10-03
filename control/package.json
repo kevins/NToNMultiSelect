@@ -1,6 +1,7 @@
 {
   "name": "ntonmultiselect",
   "version": "1.0.0",
+  "license": "MIT",
   "description": "N:N Multi-Select: a PCF field control that edits a many-to-many relationship like the native multi-select choice field.",
   "private": true,
   "scripts": {

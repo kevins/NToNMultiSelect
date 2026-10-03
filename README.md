@@ -14,7 +14,7 @@ records the same way it offers choices.
 | Form library (optional) | Web resource `kv_/NToNMultiSelect/formloader.js`, handler `KVNToNMultiSelectLoader.onLoad` |
 | Languages | English and French, following the user's language |
 | Documentation | [Technical reference (Word)](docs/NToNMultiSelect%20-%20Technical%20Reference.docx) |
-| License | Free to use |
+| License | [MIT](LICENSE) |
 
 When the environment already has a publisher with the unique name `KV`, the import uses it instead of creating a new
 one.
@@ -717,4 +717,7 @@ the form library that go into the packages are the current ones, and writes
 
 ## License
 
-This control is free to use.
+[MIT](LICENSE). Copyright (c) 2026 KV.
+
+The control is free to use, modify and share, including commercially. Keep the copyright notice and the licence
+text with copies of the code. It is provided as is, without warranty.
