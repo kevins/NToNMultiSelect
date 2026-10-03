@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WebResource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <WebResourceId>{078eac10-ccc9-489a-8eeb-8fa3feecd8f8}</WebResourceId>
+  <Name>kv_/NToNMultiSelect/formloader.js</Name>
+  <DisplayName>N:N Multi-Select form loader</DisplayName>
+  <Description>Form library for the KV.NToNMultiSelect control. Loads the control code when the platform does not deliver it. Register KVNToNMultiSelectLoader.onLoad on the form OnLoad event, pass the execution context and the column name.</Description>
+  <LanguageCode>0</LanguageCode>
+  <WebResourceType>3</WebResourceType>
+  <IntroducedVersion>1.0.0.0</IntroducedVersion>
+  <IsEnabledForMobileClient>1</IsEnabledForMobileClient>
+  <IsAvailableForMobileOffline>0</IsAvailableForMobileOffline>
+  <DependencyXml>&lt;Dependencies&gt;&lt;Dependency componentType="WebResource"/&gt;&lt;/Dependencies&gt;</DependencyXml>
+  <FileName>/WebResources/kv_NToNMultiSelectformloaderjs078EAC10-CCC9-489A-8EEB-8FA3FEECD8F8</FileName>
+</WebResource>

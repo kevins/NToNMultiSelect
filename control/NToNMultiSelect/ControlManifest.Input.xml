@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  N:N Multi-Select (KV.NToNMultiSelect)
+
+  A field control that edits a many-to-many relationship and looks like the native multi-select choice field.
+  It is placed on any text column ("Host column"); that column is only an anchor and the form never gets a value for
+  it from the control. "Copy names into the host column" writes the names to the record itself instead.
+
+  Note: the Dataverse import schema rejects apostrophes in display-name-key and description-key, so the texts
+  below avoid them (scripts/build.mjs checks this before packaging).
+-->
+<manifest>
+  <control namespace="KV" constructor="NToNMultiSelect" version="1.0.0" display-name-key="N:N Multi-Select" description-key="Edits a many-to-many (N:N) relationship with a control that looks and behaves like the native multi-select choice field. Each selection is saved immediately, and related subgrids on the form refresh automatically." control-type="standard">
+    <external-service-usage enabled="false">
+    </external-service-usage>
+
+    <type-group name="text">
+      <type>SingleLine.Text</type>
+      <type>SingleLine.TextArea</type>
+      <type>Multiple</type>
+    </type-group>
+
+    <property name="value" display-name-key="Host column" description-key="Any text column on the form that is not business required. The control uses it only as an anchor and never sets its value on the form, so a required column would block saving. To store the selected names in this column, turn on Copy names into the host column." of-type-group="text" usage="bound" required="true" />
+
+    <property name="relationshipName" display-name-key="N:N relationship schema name" description-key="Schema name of the many-to-many relationship to edit, for example new_project_skill. The name is not case-sensitive. The related table, its columns and the navigation properties are looked up automatically." of-type="SingleLine.Text" usage="input" required="true" />
+
+    <property name="filter" display-name-key="Extra OData filter (optional)" description-key="OData filter that limits the records that can be selected, for example new_category eq 2. It is applied in addition to the active-records filter. It cannot be combined with Records from view or FetchXML filter; in that case, add the condition to the FetchXML filter instead." of-type="SingleLine.Text" usage="input" required="false" />
+
+    <property name="view" display-name-key="Records from view (optional)" description-key="Name or ID of a system view of the related table, for example Active Skills. Only records returned by the view can be selected. Only the filters of the view are used, including filters on related tables; its columns and sort order are ignored. In an environment with more than one language, enter the view ID, because translated view names differ between languages. When a view is set, Show inactive records is ignored." of-type="SingleLine.Text" usage="input" required="false" />
+
+    <property name="fetchXml" display-name-key="FetchXML filter (optional)" description-key="Either one or more filter and link-entity elements, which are added to the query with AND (together with the view, when one is set), or a complete FetchXML query (a fetch element) for the related table. A complete query cannot be combined with a view. Only filters are used; columns and sort order are ignored. Show inactive records is ignored when a complete query is used." of-type="Multiple" usage="input" required="false" />
+
+    <property name="showInactive" display-name-key="Show inactive records" description-key="No (default): only active records can be selected (status Active, or enabled users for the User table). Yes: inactive records can be selected as well. For tables where the usable status is not 0, such as published knowledge articles, choose Yes and add the status condition to the Extra OData filter. Ignored when a view or a complete FetchXML query is set." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <property name="showSelectAll" display-name-key="Show Select all" description-key="Yes (default): the list starts with a Select all row, like the native control. No: the Select all row is never shown." of-type="Enum" usage="input" required="false" default-value="1">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <property name="selectAllLimit" display-name-key="Select all limit" description-key="Select all is offered only when the list contains at most this many records. Default 100, maximum 500; 0 means 500. Each record is linked with its own request, so selecting many records at once takes longer to save." of-type="Whole.None" usage="input" required="false" />
+
+    <property name="maxSelections" display-name-key="Maximum selections" description-key="Maximum number of records that can be selected in this control. Leave empty or enter 0 (default) for no limit. The limit applies to this control only; subgrids and integrations can still add more records." of-type="Whole.None" usage="input" required="false" />
+
+    <property name="subgrids" display-name-key="Subgrids to refresh (optional)" description-key="Comma-separated names of the subgrid controls to keep in sync. Leave empty to use every subgrid on the form that shows the same relationship. Enter none to turn syncing off: subgrids are not refreshed, and changes made in them appear in the control only after the form reloads." of-type="SingleLine.Text" usage="input" required="false" />
+
+    <property name="hideSubgrids" display-name-key="Hide related subgrids" description-key="No (default): related subgrids stay on the form. Yes: the control replaces the related subgrids and hides them. These are the subgrids listed in Subgrids to refresh or, when that setting is empty or none, every subgrid on the form that shows the same relationship. The control does not depend on the subgrid. To keep the subgrid from appearing briefly while the form loads, remove it from the form or clear Visible by default in its properties instead." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <property name="placeholder" display-name-key="Placeholder (optional)" description-key="Text shown in the empty search box. Default: Select or search options." of-type="SingleLine.Text" usage="input" required="false" />
+
+    <property name="writeSummary" display-name-key="Copy names into the host column" description-key="No (default): the host column is never changed. Yes: after each change is saved, the selected names (for example API design; Automation) are written to the host column of the record in a separate update, so they can be shown in views, searched and exported. The text is cut to the maximum length of the host column, so give the column enough room, for example 4000 characters. A record is updated only when its selection changes, so records linked before this setting was turned on need a one-time update. The form is not made dirty, plug-ins, flows and auditing see the update, and users need Write permission on the record. Only changes made with this control or with subgrids on the same form are copied, not changes made elsewhere (imports, integrations or the other side of the relationship), and only records the user can see are included. Anyone who can read the record can read the copied names, including users who cannot see the related records themselves: when the related table holds restricted records, leave this off or secure the host column with column security. For a column that is always accurate, use a plug-in on Associate and Disassociate instead." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <property name="searchMode" display-name-key="Search mode for large tables" description-key="Applies when the related table has more than 500 records and searching runs on the server. Starts with (default) is fast on tables of any size. Contains finds the text anywhere in the name but is slower on very large tables. Lists of up to 500 records always match the text anywhere in the name." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="StartsWith" display-name-key="Starts with">0</value>
+      <value name="Contains" display-name-key="Contains">1</value>
+    </property>
+
+    <property name="openOnClick" display-name-key="Open list on click" description-key="No (default): like the native multi-select choice, clicking the box only focuses it, and the list opens from the arrow button, the Down arrow key, Enter or typing. Yes: clicking anywhere in the box opens the list." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <property name="openRecords" display-name-key="Open selected records" description-key="No (default): like the native multi-select choice, selected values are plain text. Yes: each selected value is a link that opens the record in a new browser tab. Ctrl+click and middle-click work as for any link, Enter opens the value highlighted with the keyboard (Backspace in the empty search box, then the Left and Right arrow keys), and the links also work when the field is read-only." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <property name="allowCreate" display-name-key="Show + New button" description-key="No (default): the control looks exactly like the native multi-select choice. Yes: the list ends with a + New button that opens the quick create form of the related table and selects the new record if it is one of the records the list offers. The button appears only when quick create is enabled for the related table." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <resources>
+      <code path="index.ts" order="1" />
+    </resources>
+  </control>
+</manifest>

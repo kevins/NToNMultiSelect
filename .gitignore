@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+obj/
+bin/
+**/generated/
+*.binlog
+.vs/
+
+# Solution packages: built by scripts/build.mjs and attached to each GitHub release
+dist/
+
+# Operating system files
+.DS_Store
+Thumbs.db
