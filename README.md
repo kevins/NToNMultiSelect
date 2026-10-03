@@ -6,7 +6,7 @@ records the same way it offers choices.
 
 ![N:N Multi-Select in action: picking, searching, subgrids in sync and the settings](docs/gallery/NToNMultiSelect-demo.gif)
 
-The same demo as a [video (MP4)](docs/gallery/NToNMultiSelect-demo.mp4).
+The same demo as a [video on YouTube](https://www.youtube.com/watch?v=2jof2VszZjU).
 
 | Item | Value |
 | --- | --- |
