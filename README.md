@@ -213,8 +213,8 @@ only. Leave *Bind to table column* cleared and type the value under *Static valu
 | Host column | (required) | Text column the control is placed on. Used only as an anchor; must not be Business Required |
 | N:N relationship schema name | (required) | The relationship to edit, for example `new_project_skill`. Not case-sensitive |
 | Extra OData filter | empty | Limits the records that can be selected, for example `new_category eq 2`. Cannot be combined with a view or FetchXML |
-| Records from view | empty | Name or id of a system view of the related table; only records the view returns can be selected. Use the id when view names are translated. See [Choosing which records can be selected](#choosing-which-records-can-be-selected) |
-| FetchXML filter | empty | `<filter>` and `<link-entity>` elements that narrow the list (and the view, if set), or a complete `<fetch>` query |
+| Records from view | empty | Name or id of a system view of the related table; only records the view returns can be selected, in the view's sort order. Use the id when view names are translated. See [Choosing which records can be selected](#choosing-which-records-can-be-selected) |
+| FetchXML filter | empty | `<filter>` and `<link-entity>` elements that narrow the list (and the view, if set), or a complete `<fetch>` query, which also sets the sort order |
 | Show inactive records | No | Also offer inactive records. Ignored with a view or a complete FetchXML query |
 | Show Select all | Yes | Shows or hides the Select all row |
 | Select all limit | 100 | Select all is offered only when the list holds at most this many records. Maximum 500; 0 means 500 |
@@ -234,9 +234,9 @@ The same descriptions appear as tooltips in the form designer.
 
 By default every active record of the related table can be selected. Three settings narrow that down:
 
-* **Records from view**: the list shows what a system view of the related table shows. Enter the view's name or id.
-  Only the view's filters are used, including filters on related tables; its columns and sort order are ignored (the
-  list is always sorted by name). The view decides which records are usable, so *Show inactive records* is ignored.
+* **Records from view**: the list shows what a system view of the related table shows, in the view's sort order (see
+  [Sort order](#sort-order)). Enter the view's name or id. The view's filters are used, including filters on related
+  tables; its columns are ignored. The view decides which records are usable, so *Show inactive records* is ignored.
   In an environment with more than one language, **enter the id**: translated view names differ between languages,
   so a name that works for one user can fail for another. To find the id, open
   `<environment URL>/api/data/v9.2/savedqueries?$select=name&$filter=returnedtypecode eq '<table name>'` in the
@@ -244,7 +244,8 @@ By default every active record of the related table can be selected. Three setti
   the translated view, or lists the table's views with their ids (in full in the browser console).
 * **FetchXML filter**: either `<filter>` and `<link-entity>` elements, which are added with AND to the view (or,
   without a view, to a query of the related table that still follows *Show inactive records*), or a complete `<fetch>`
-  query of the related table, which then decides on its own. A complete query cannot be combined with a view.
+  query of the related table, which then decides on its own, sort order included. A complete query cannot be combined
+  with a view. `<filter>` and `<link-entity>` elements only narrow the list and never change its order.
 * **Extra OData filter**: a simple condition on the related table's own columns, for example `new_category eq 2`. It
   cannot be combined with a view or FetchXML; put the condition in the FetchXML filter instead.
 
@@ -265,6 +266,24 @@ view name, FetchXML that is not valid or queries another table, a complete query
 in the list and in the browser console. A view's query is read once per page load, so reload the app after changing
 the view.
 
+### Sort order
+
+Without a view or a complete `<fetch>` query, the list is sorted by name. With one, the list follows its sort order:
+
+* Its `<order>` elements in their sequence (`descending="true"` included), then the record id, so that records with
+  equal values always come in the same order. A view or query without an order the list can follow is sorted by name.
+* Orders written inside a `<link-entity>` that follows a lookup (joined on the linked table's id) come after the
+  orders on the related table's own columns, as Dataverse applies them; an `<order entityname="alias">` on the entity
+  keeps its place.
+* Orders on other `<link-entity>` elements (child records, `exists`, `in`, `any` and `all` links, links inside links)
+  and any `<order>` in the `<filter>` and `<link-entity>` elements of *FetchXML filter* are ignored.
+* Choice columns are sorted by their label in the user's language, unless the `<fetch>` has `useraworderby="true"`
+  (then by value). Lookup columns are sorted by the name of the related record.
+* On tables with more than 500 matching records, more rows load with Dataverse's paging cookie. A list sorted on a
+  linked column, or with `useraworderby="true"`, loads them by page number instead (the cookie can't follow those
+  orders), which is slower on very large tables and stops at 50,000 records.
+* The selected values, and the names copied into the host column, stay sorted by name.
+
 ### Subgrids
 
 After the user pauses (about half a second after the last change is saved), each related subgrid is refreshed once
@@ -283,7 +302,7 @@ leaves all subgrids alone.
 
 ### Copy names into the host column
 
-Once a change is saved, the selected names ("A; B; C", sorted as shown and cut to the column's length) are written to
+Once a change is saved, the selected names ("A; B; C", sorted by name and cut to the column's length) are written to
 the host column of the record with an update of their own. Plug-ins, flows and auditing on the record see that update,
 and the user needs Write on the record. The form is never made dirty, opening a record never writes to it, and a new
 record gets its copy once, after its first save has linked the picks.
@@ -485,8 +504,9 @@ The control logs to the browser console with the prefix `[KV.NToNMultiSelect]`, 
 * **New records.** On new records opened in a dialog or side pane, and on new Appointment, Recurring Appointment and
   Service Activity records, the control shows "Save the record first" and records can be picked once the record is
   saved. On quick create forms, which close when they are saved, the control cannot be used to pick.
-* **List.** Only the related table's primary name is shown, sorted by name. On tables with more than 500 matching
-  records, search matches the start of the name by default.
+* **List.** Only the related table's primary name is shown, sorted by name or in the sort order of the view or
+  complete query ([Sort order](#sort-order)). On tables with more than 500 matching records, search matches the start
+  of the name by default.
 * **Select all.** Offered only when every matching record is loaded and their number is within the Select all limit
   (500 at most). Each record is linked with its own request.
 * **Dialogs and side panes.** On saved records, changes are saved, but that form's subgrids are not refreshed or
@@ -645,10 +665,10 @@ Both plug-ins are optional; the control works the same way with or without them.
 * **+ New**: the record made in quick create is selected only when the list offers it (active records, the extra
   filter, the view or the FetchXML filter); otherwise the control says it was created but not selected.
 * **Large tables**: up to 500 selectable rows load once and are filtered instantly (ignoring case and accents). Larger
-  tables switch to server-side search with paging on scroll (FetchXML paging cookies with a view or FetchXML). Select
-  all appears only when every matching row is loaded and the count is within the Select all limit. When the list
-  settings change while the form is open (a setting bound to a column), the list reloads, and a page still on its way
-  for the old settings is dropped.
+  tables switch to server-side search with paging on scroll (FetchXML paging cookies with a view or FetchXML, or page
+  numbers when the list is sorted on a linked column or with `useraworderby`). Select all appears only when every matching
+  row is loaded and the count is within the Select all limit. When the list settings change while the form is open (a
+  setting bound to a column), the list reloads, and a page still on its way for the old settings is dropped.
 * **Metadata**: relationship metadata (and a view's query, when one is set) is read once per page load and kept in
   memory. If it turns out to be out of date (for example, the relationship was renamed), the control reads it again
   once.

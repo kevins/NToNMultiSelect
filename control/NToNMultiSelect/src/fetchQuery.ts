@@ -131,11 +131,88 @@ export function readFetchSetting(settings: ListSettings): FetchSetting {
     return { query: null, parts: elements };
 }
 
+/** One sort order of the list. `link` is set for a column of a table reached through a lookup. */
+interface ListOrder {
+    attribute: string;
+    descending: boolean;
+    link: Element | null;
+}
+
+/**
+ * The link-entities directly under the entity that follow a lookup: an inner or outer join on the linked table's
+ * primary key, so each record meets at most one linked row and sorting on it can't list a record twice. The other
+ * link types (exists, in, any, all...) only filter, and a link to child records can match many rows.
+ */
+function lookupLinks(entity: Element): Element[] {
+    return childElements(entity, "link-entity").filter((link) => {
+        const type = (link.getAttribute("link-type") ?? "inner").trim().toLowerCase();
+        const table = (link.getAttribute("name") ?? "").trim().toLowerCase();
+        const from = (link.getAttribute("from") ?? "").trim().toLowerCase();
+        return (type === "inner" || type === "outer") && table !== "" && from === `${table}id` && !!link.getAttribute("to")?.trim();
+    });
+}
+
+function readOrder(order: Element, link: Element | null): ListOrder | null {
+    // An order without a column (<order alias="...">) belongs to aggregate queries.
+    const attribute = (order.getAttribute("attribute") ?? "").trim();
+    if (!attribute) return null;
+    return { attribute, descending: xmlTrue(order.getAttribute("descending")), link };
+}
+
+/**
+ * The sort order of a view or complete query, in the sequence Dataverse applies it: the entity's own orders (an
+ * order with entityname names a link), then the orders inside lookup links, which Dataverse applies after the
+ * entity's. Orders the list can't follow are left out; a column sorted twice keeps its first order.
+ */
+function sourceOrders(entity: Element): ListOrder[] {
+    const links = lookupLinks(entity);
+    const found: (ListOrder | null)[] = [];
+    for (const order of childElements(entity, "order")) {
+        const alias = (order.getAttribute("entityname") ?? "").trim().toLowerCase();
+        const link = alias ? links.find((l) => (l.getAttribute("alias") ?? "").trim().toLowerCase() === alias) : null;
+        if (!alias || link) found.push(readOrder(order, link ?? null));
+    }
+    for (const link of links) {
+        for (const order of childElements(link, "order")) found.push(readOrder(order, link));
+    }
+    const seen = new Set<string>();
+    return found.filter((order): order is ListOrder => {
+        if (!order) return false;
+        const key = `${order.link ? links.indexOf(order.link) : -1}|${order.attribute.toLowerCase()}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+/**
+ * The alias an order on a linked column refers to. A link without one gets its table name, which keeps working any
+ * condition that names the link by its table, unless the query's own table or another link-entity already uses that
+ * name (a link to the same table, such as a parent record): the link's orders are then left out (null).
+ */
+function linkAlias(doc: Document, link: Element): string | null {
+    const alias = link.getAttribute("alias")?.trim();
+    if (alias) return alias;
+    const table = link.getAttribute("name")!.trim();
+    const root = childElement(doc.documentElement, "entity")?.getAttribute("name");
+    const taken =
+        root?.trim().toLowerCase() === table.toLowerCase() ||
+        Array.from(doc.getElementsByTagName("link-entity")).some(
+            (other) => other !== link && [other.getAttribute("alias"), other.getAttribute("name")].some((v) => v?.trim().toLowerCase() === table.toLowerCase()),
+        );
+    if (taken) return null;
+    link.setAttribute("alias", table);
+    return table;
+}
+
 /**
  * The FetchXML that lists the records that can be picked: the view's query, the complete query from the setting or
  * one generated for the related table, narrowed by the setting's filter and link-entity elements (sibling filters
- * under an entity are combined with AND). Only filters are kept. The columns become the id and the name, sorted by
- * name and then id (paging needs a stable order), and any paging or row limit in the source is dropped.
+ * under an entity are combined with AND). The filters and the sort order of a view or complete query are kept: the
+ * entity's orders, then the orders of lookup links (moved to the entity with entityname, where Dataverse applies them
+ * after the entity's own), and the id last, so that the order is unique, which paging needs. A generated query, or
+ * one with no order the list can follow, is sorted by name and then id. The columns become the id and the name, and
+ * any paging or row limit in the source is dropped.
  */
 export function buildListFetch(rel: RelationshipInfo, setting: FetchSetting, viewFetchXml: string | null, showInactive: boolean): string {
     let doc: Document;
@@ -152,7 +229,7 @@ export function buildListFetch(rel: RelationshipInfo, setting: FetchSetting, vie
     if (!entity) {
         throw new QueryConfigError({ kind: "notQuery" });
     }
-    if (fetch.getAttribute("aggregate")?.toLowerCase() === "true") {
+    if (xmlTrue(fetch.getAttribute("aggregate"))) {
         throw new QueryConfigError({ kind: "aggregate" });
     }
     const table = (entity.getAttribute("name") ?? "").toLowerCase();
@@ -160,6 +237,8 @@ export function buildListFetch(rel: RelationshipInfo, setting: FetchSetting, vie
         throw new QueryConfigError({ kind: "otherTable", table, expected: rel.targetEntity });
     }
 
+    // Read before the setting's elements are added: they only filter, and never change the order.
+    const orders = viewFetchXml !== null || setting.query ? sourceOrders(entity) : [];
     for (const part of setting.parts) {
         entity.appendChild(doc.importNode(part, true));
     }
@@ -174,11 +253,22 @@ export function buildListFetch(rel: RelationshipInfo, setting: FetchSetting, vie
     for (const name of ["top", "count", "page", "paging-cookie", "returntotalrecordcount"]) {
         fetch.removeAttribute(name);
     }
+    const sorted: Record<string, string>[] = [];
+    for (const order of orders) {
+        const alias = order.link ? linkAlias(doc, order.link) : null;
+        if (order.link && !alias) continue;
+        sorted.push({ ...(alias ? { entityname: alias } : {}), attribute: order.attribute, ...(order.descending ? { descending: "true" } : {}) });
+    }
+    if (!sorted.length) {
+        sorted.push({ attribute: rel.targetNameAttribute });
+    }
+    if (!sorted.some((order) => !order.entityname && order.attribute.toLowerCase() === rel.targetIdAttribute)) {
+        sorted.push({ attribute: rel.targetIdAttribute });
+    }
     entity.prepend(
         element(doc, "attribute", { name: rel.targetIdAttribute }),
         element(doc, "attribute", { name: rel.targetNameAttribute }),
-        element(doc, "order", { attribute: rel.targetNameAttribute }),
-        element(doc, "order", { attribute: rel.targetIdAttribute }),
+        ...sorted.map((order) => element(doc, "order", order)),
     );
     // A link to the "many" side returns a row per match; the list needs each record once.
     if (entity.getElementsByTagName("link-entity").length) {
@@ -207,12 +297,18 @@ export function firstPageFetch(xml: string, count: number, conditions: FetchCond
 /**
  * The page after the one `xml` asks for. With Dataverse's paging cookie the server carries on after the last record
  * it sent instead of counting rows again; without one, the page number alone is used. The page number is always
- * counted on from `xml`; only the cookie is taken from the annotation.
+ * counted on from `xml`; only the cookie is taken from the annotation. Two lists always go by page number:
+ *  - one sorted on a linked column: the cookie only records the entity's own columns, and Dataverse says such queries
+ *    "might not support" it;
+ *  - one with useraworderby, which sorts choices by value: the cookie still records their labels, so Dataverse would
+ *    repeat and skip records (seen on a live environment).
  */
 export function nextPageFetch(xml: string, pagingCookie: string | undefined): string {
     const doc = parseXml(xml);
     const fetch = doc.documentElement;
-    const cookie = pagingCookie ? parsePagingCookie(pagingCookie) : null;
+    const entity = childElement(fetch, "entity");
+    const linkedOrder = !!entity && childElements(entity, "order").some((order) => order.hasAttribute("entityname"));
+    const cookie = pagingCookie && !linkedOrder && !xmlTrue(fetch.getAttribute("useraworderby")) ? parsePagingCookie(pagingCookie) : null;
     fetch.setAttribute("page", String(Number(fetch.getAttribute("page") || "1") + 1));
     if (cookie?.cookie) {
         fetch.setAttribute("paging-cookie", cookie.cookie);
@@ -261,6 +357,16 @@ function serialize(el: Element): string {
 
 function childElement(parent: Element, name: string): Element | null {
     return Array.from(parent.children).find((child) => child.nodeName === name) ?? null;
+}
+
+function childElements(parent: Element, name: string): Element[] {
+    return Array.from(parent.children).filter((child) => child.nodeName === name);
+}
+
+/** An XML Schema boolean attribute: "true" or "1" (in any case, as Dataverse reads them). */
+function xmlTrue(value: string | null): boolean {
+    const v = (value ?? "").trim().toLowerCase();
+    return v === "true" || v === "1";
 }
 
 function element(doc: Document, name: string, attributes: Record<string, string>): Element {

@@ -92,13 +92,28 @@ export class RelatedData {
         const path = nextLink ?? this.fetchPath(firstPageFetch(await this.listFetch(query), pageSize, this.fetchConditions(query, searchTerm)));
         const body = await this.client.get<FetchResult>(path, { prefer: [FETCH_ANNOTATIONS], signal });
         const rows = body.value ?? [];
-        const items = rows.map((row) => this.toItem(row)).filter((item) => item.id !== query.excludeId);
+        // Each record once, even if a query with links ever returned one twice: the list is keyed by id.
+        const seen = new Set<string>();
+        const items: Item[] = [];
+        for (const row of rows) {
+            const item = this.toItem(row);
+            if (item.id === query.excludeId || seen.has(item.id)) continue;
+            seen.add(item.id);
+            items.push(item);
+        }
         // Without the annotation this is the last page, even when it is full.
         if (body["@Microsoft.Dynamics.CRM.morerecords"] !== true) {
             return { items, nextLink: null };
         }
         const xml = decodeURIComponent(path.slice(path.indexOf(FETCH_PARAMETER) + FETCH_PARAMETER.length));
-        return { items, nextLink: this.fetchPath(nextPageFetch(xml, body["@Microsoft.Dynamics.CRM.fetchxmlpagingcookie"])) };
+        try {
+            return { items, nextLink: this.fetchPath(nextPageFetch(xml, body["@Microsoft.Dynamics.CRM.fetchxmlpagingcookie"])) };
+        } catch (error) {
+            // The cookie holds the sorted values of the last record, so a long one can make the address too long:
+            // the page number alone then does.
+            if (!(error instanceof QueryConfigError && error.problem.kind === "tooLong")) throw error;
+            return { items, nextLink: this.fetchPath(nextPageFetch(xml, undefined)) };
+        }
     }
 
     /** The list's FetchXML before paging and search. A view's query is looked up once per page load. */

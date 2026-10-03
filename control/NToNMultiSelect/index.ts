@@ -1165,7 +1165,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             this.render();
             return;
         }
-        // Reload the list so the new record appears in its sorted place, if the list offers it.
+        // Reload the list so the new record appears in its place in the list's order, if the list offers it.
         this.resetOptions();
         void this.ensureOptions();
         // Quick create knows nothing of the list's filter, view or FetchXML, so check the new record against them.
