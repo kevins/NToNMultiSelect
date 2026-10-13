@@ -9,8 +9,17 @@ bin/
 *.binlog
 .vs/
 
-# Solution packages: built by scripts/build.mjs and attached to each GitHub release
+# Solution packages: built by scripts/build.mjs and scripts/build-with-plugin.mjs, attached to each GitHub release
 dist/
+
+# The solution project that scripts/build-with-plugin.mjs generates
+solution-with-plugin/
+
+# The strong name key of the plug-in: private, created by the first build of scripts/build-with-plugin.mjs
+plugin/NamesCopy/NamesCopy.snk
+
+# Lock files that Microsoft Office creates while a document is open
+~$*
 
 # Operating system files
 .DS_Store

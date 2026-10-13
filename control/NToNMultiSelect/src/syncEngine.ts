@@ -10,8 +10,12 @@ export interface SyncCallbacks {
     onChange(): void;
     /** A batch of server writes finished; `changed` is true when at least one write succeeded. */
     onSettled(changed: boolean): void;
-    /** A write failed and the item was rolled back to its saved state. */
-    onError(item: Item, operation: "add" | "remove", error: unknown): void;
+    /**
+     * A write failed and the item was rolled back to its saved state. Returns true when the write may have been saved
+     * all the same (the connection dropped or it timed out): an add then keeps its place toward Maximum selections
+     * until a read of the saved links (setConfirmed) settles it.
+     */
+    onError(item: Item, operation: "add" | "remove", error: unknown): boolean | void;
 }
 
 const MAX_PARALLEL = 4;
@@ -28,6 +32,8 @@ export class SyncEngine {
     private confirmed = new Map<string, Item>();
     private desired = new Map<string, Item>();
     private inFlight = new Set<string>();
+    /** Adds that failed in a way that may still have saved them, until the next read of the saved links. */
+    private uncertain = new Set<string>();
     private recordId: string | null = null;
     private running = false;
     private changedInBatch = false;
@@ -59,6 +65,8 @@ export class SyncEngine {
         const pendingRemoves = [...this.confirmed.keys()].filter((id) => !this.desired.has(id));
         this.confirmed = new Map(items.map((i) => [i.id, i]));
         this.desired = new Map(this.confirmed);
+        // The saved links are known again: an add whose outcome wasn't known is either among them or not saved.
+        this.uncertain.clear();
         for (const item of pendingAdds) {
             this.desired.set(item.id, item);
         }
@@ -82,6 +90,43 @@ export class SyncEngine {
 
     public selectedCount(): number {
         return this.desired.size;
+    }
+
+    /**
+     * Whether `id` takes a place toward Maximum selections: it is selected, or it may end up saved (see placeHolders).
+     */
+    public occupies(id: string): boolean {
+        return this.desired.has(id) || this.confirmed.has(id) || this.inFlight.has(id) || this.uncertain.has(id);
+    }
+
+    /**
+     * Records that take a place toward Maximum selections without being selected, because they may end up saved: a
+     * saved record whose removal hasn't succeeded yet (it may fail and bring the record back), an add the user undid
+     * while it was on its way (it may land and need a removal, which may fail), and an add that failed in a way that
+     * may still have saved it, until a read of the saved links settles it.
+     */
+    public placeHolders(): Set<string> {
+        const ids = new Set<string>();
+        for (const id of this.confirmed.keys()) {
+            if (!this.desired.has(id)) ids.add(id);
+        }
+        for (const id of this.inFlight) {
+            if (!this.desired.has(id)) ids.add(id);
+        }
+        for (const id of this.uncertain) {
+            if (!this.desired.has(id)) ids.add(id);
+        }
+        return ids;
+    }
+
+    /** Whether an add whose outcome isn't known still holds a place (only a read of the saved links settles it). */
+    public hasUncertain(): boolean {
+        return this.uncertain.size > 0;
+    }
+
+    /** How many records take a place toward Maximum selections: the selected ones and the placeHolders(). */
+    public occupiedCount(): number {
+        return this.desired.size + this.placeHolders().size;
     }
 
     /** Desired selection, sorted by name. The same array is returned until the selection changes. */
@@ -223,6 +268,7 @@ export class SyncEngine {
             if (operation === "add") {
                 await this.executor.associate(recordId, item.id);
                 this.confirmed.set(item.id, item);
+                this.uncertain.delete(item.id);
             } else {
                 await this.executor.disassociate(recordId, item.id);
                 this.confirmed.delete(item.id);
@@ -239,7 +285,9 @@ export class SyncEngine {
                 this.desired.set(item.id, this.confirmed.get(item.id) ?? item);
             }
             this.sortedCache = null;
-            this.callbacks.onError(item, operation, error);
+            if (this.callbacks.onError(item, operation, error) === true && operation === "add") {
+                this.uncertain.add(item.id);
+            }
         } finally {
             this.inFlight.delete(item.id);
             this.version++;

@@ -45,6 +45,21 @@ export interface OptionsQuery {
  * Dataverse evaluates contains() and startswith() as SQL LIKE, so %, _ and [ act as wildcards. Wrapping them in
  * brackets makes a search for e.g. "50%" or "C_Sharp" match literally.
  */
+/**
+ * The tag of a link the control makes or removes while it writes the host column copy itself ("Copy names into the
+ * host column"). The Web API hands it to the plug-ins of the request (in SharedVariables), and the names copy plug-in
+ * (part of the optional solution with the plug-in) then leaves that column of that record alone: the control writes it
+ * once the links are saved, so a link costs what it costs without the plug-in, which copies the links made elsewhere.
+ */
+export function linkTag(rel: RelationshipInfo, recordId: string, hostColumn: string): string {
+    return `NToNMultiSelect|${rel.schemaName}|${rel.currentEntity}|${recordId}|${hostColumn}`;
+}
+
+/** The query string that hands `tag` to the plug-ins of a request, or "" without one. */
+function tagQuery(tag?: string): string {
+    return tag ? `?tag=${encodeURIComponent(tag)}` : "";
+}
+
 export function escapeLikeWildcards(term: string): string {
     return term.replace(/[[%_]/g, (ch) => `[${ch}]`);
 }
@@ -193,10 +208,11 @@ export class RelatedData {
         return page.value.length > 0;
     }
 
-    public async associate(recordId: string, targetId: string): Promise<void> {
+    /** Links `targetId` to the record. A `tag` goes with the request to the plug-ins (see linkTag). */
+    public async associate(recordId: string, targetId: string, tag?: string): Promise<void> {
         const { currentEntitySet, navigationProperty, targetEntitySet } = this.rel;
         try {
-            await this.client.send("POST", `${currentEntitySet}(${recordId})/${navigationProperty}/$ref`, {
+            await this.client.send("POST", `${currentEntitySet}(${recordId})/${navigationProperty}/$ref${tagQuery(tag)}`, {
                 "@odata.id": `${this.client.apiUrl}/${targetEntitySet}(${targetId})`,
             });
         } catch (error) {
@@ -222,10 +238,11 @@ export class RelatedData {
         }
     }
 
-    public async disassociate(recordId: string, targetId: string): Promise<void> {
+    /** Unlinks `targetId` from the record. A `tag` goes with the request to the plug-ins (see linkTag). */
+    public async disassociate(recordId: string, targetId: string, tag?: string): Promise<void> {
         const { currentEntitySet, navigationProperty } = this.rel;
         try {
-            await this.client.send("DELETE", `${currentEntitySet}(${recordId})/${navigationProperty}(${targetId})/$ref`);
+            await this.client.send("DELETE", `${currentEntitySet}(${recordId})/${navigationProperty}(${targetId})/$ref${tagQuery(tag)}`);
         } catch (error) {
             if (!isNotFound(error)) {
                 throw error;
@@ -237,8 +254,12 @@ export class RelatedData {
      * Sets one column of the record the links belong to ("Copy names into the host column"). If-Match: * keeps it an
      * update: without it, a PATCH to a record that was just deleted would create it again.
      */
+    /**
+     * Writes `value` into `column` of the record. Sent with keepalive: once on its way, the browser finishes it even if
+     * the user closes the page meanwhile (see SendOptions.keepalive).
+     */
     public async updateRecord(recordId: string, column: string, value: string | null): Promise<void> {
-        await this.client.send("PATCH", `${this.rel.currentEntitySet}(${recordId})`, { [column]: value }, { "If-Match": "*" });
+        await this.client.send("PATCH", `${this.rel.currentEntitySet}(${recordId})`, { [column]: value }, { "If-Match": "*" }, { keepalive: true });
     }
 
     private toItem(row: Record<string, unknown>): Item {

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net462</TargetFramework>
+    <AssemblyName>NToNMultiSelect.NamesCopy</AssemblyName>
+    <RootNamespace>NToNMultiSelect.NamesCopy</RootNamespace>
+    <Version>1.0.0.0</Version>
+    <Product>N:N Multi-Select</Product>
+    <Description>Copies the linked names into the host column of N:N Multi-Select after links are made or removed anywhere and, with its Delete and Update steps, after linked records are deleted or renamed.</Description>
+    <!-- Dataverse only registers strong-named plug-in assemblies. -->
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>NamesCopy.snk</AssemblyOriginatorKeyFile>
+  </PropertyGroup>
+
+  <!-- The released assembly carries no debug information, so it holds no path of the computer that built it. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <!-- No other packages: the Dataverse sandbox loads the plug-in assembly alone. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CrmSdk.CoreAssemblies" Version="9.0.2.*" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

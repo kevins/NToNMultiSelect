@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<PluginAssembly FullName="NToNMultiSelect.NamesCopy, Version=1.0.0.0, Culture=neutral, PublicKeyToken=5cb2560336bdade3" PluginAssemblyId="02116f62-39c3-f111-b377-7ced8da4e57c" CustomizationLevel="1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <IsolationMode>2</IsolationMode>
+  <SourceType>0</SourceType>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <FileName>/PluginAssemblies/NToNMultiSelectNamesCopy-02116F62-39C3-F111-B377-7CED8DA4E57C/NToNMultiSelectNamesCopy.dll</FileName>
+  <PluginTypes>
+    <PluginType AssemblyQualifiedName="NToNMultiSelect.NamesCopy.NamesCopyPlugin, NToNMultiSelect.NamesCopy, Version=1.0.0.0, Culture=neutral, PublicKeyToken=5cb2560336bdade3" PluginTypeId="04116f62-39c3-f111-b377-7ced8da4e57c" Name="NToNMultiSelect.NamesCopy.NamesCopyPlugin">
+      <Description>Writes the linked names into the host column of N:N Multi-Select (Copy names into the host column = Yes) when records are linked or unlinked anywhere; with the Delete and Update steps its steps page makes, also when a linked record is deleted or renamed.</Description>
+      <FriendlyName>N:N Multi-Select names copy</FriendlyName>
+    </PluginType>
+  </PluginTypes>
+</PluginAssembly>

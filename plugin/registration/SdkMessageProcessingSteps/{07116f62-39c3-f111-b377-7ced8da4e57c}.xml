@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<SdkMessageProcessingStep Name="N:N Multi-Select names copy: Disassociate" SdkMessageProcessingStepId="{07116f62-39c3-f111-b377-7ced8da4e57c}" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SdkMessageId>bdfc191d-fc56-493a-a6b1-cb0c47a22ecc</SdkMessageId>
+  <PluginTypeName>NToNMultiSelect.NamesCopy.NamesCopyPlugin, NToNMultiSelect.NamesCopy, Version=1.0.0.0, Culture=neutral, PublicKeyToken=5cb2560336bdade3</PluginTypeName>
+  <PluginTypeId>04116f62-39c3-f111-b377-7ced8da4e57c</PluginTypeId>
+  <AsyncAutoDelete>0</AsyncAutoDelete>
+  <Description>Copies the linked names into the host column (N:N Multi-Select).</Description>
+  <FilteringAttributes></FilteringAttributes>
+  <InvocationSource>0</InvocationSource>
+  <Mode>0</Mode>
+  <Rank>1</Rank>
+  <EventHandlerTypeCode>4602</EventHandlerTypeCode>
+  <Stage>40</Stage>
+  <IsCustomizable>1</IsCustomizable>
+  <IsHidden>0</IsHidden>
+  <SupportedDeployment>0</SupportedDeployment>
+  <IntroducedVersion>1.0</IntroducedVersion>
+  <SdkMessageProcessingStepImages />
+</SdkMessageProcessingStep>

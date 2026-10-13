@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>N:N Multi-Select names copy: steps for your tables</title>
+<!--
+  The steps page of the names copy plug-in, a web resource of the solution with the plug-in. An administrator opens it
+  at <environment URL>/WebResources/<prefix>_/NToNMultiSelect/namescopysteps.html. It runs in the environment's own
+  address, so it calls the Dataverse Web API with the signed-in user's session and privileges: no sign-in of its own.
+
+  It finds the N:N relationships whose names are copied (the control's settings on the active forms, read
+  with the rules of the plug-in) and relationships typed by hand, works out their linked tables (the side
+  whose names are copied), and creates, for each linked table, the plug-in's Delete steps and Update step
+  limited to that table (the Update step only for its primary name column). Dataverse then calls them only
+  for deletes and renames of that table, instead of for every delete and update in the environment. A new
+  step goes into one solution: the unmanaged solution this page is in (normally the solution with the
+  plug-in; when the page is in several, the one chosen on the page), otherwise NToNMultiSelectTableSteps,
+  made when needed with the publisher of the solution that contains the plug-in. The page finds its steps
+  by their ids wherever they are, shows which solutions they are in, and never moves them between
+  solutions: that is left to you. Steps that are managed in an environment are left alone: they are
+  changed in development. The page only deletes a step when you remove it: one of its steps put on another
+  message elsewhere is shown as such, and Create leaves that table alone until you have removed its steps.
+-->
+<style>
+  :root {
+    --text: #242424; --muted: #616161; --line: #e0e0e0; --panel: #f5f5f5; --bg: #ffffff;
+    --accent: #0f6cbd; --accent-hover: #115ea3; --ok: #0e700e; --warn: #8a3707; --warn-bg: #fdf6f3; --error: #b10e1c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI", "Segoe UI Web (West European)", -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 24px 48px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  h2 { font-size: 16px; font-weight: 600; margin: 28px 0 6px; }
+  p { margin: 6px 0; }
+  .muted { color: var(--muted); }
+  .note { background: var(--panel); border-left: 3px solid var(--accent); padding: 8px 12px; margin: 10px 0; }
+  .warning { background: var(--warn-bg); border-left: 3px solid var(--warn); color: var(--warn); padding: 8px 12px; margin: 10px 0; }
+  .error { color: var(--error); }
+  .ok { color: var(--ok); }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  td.check, th.check { width: 36px; }
+  td small { display: block; color: var(--muted); }
+  code { font-family: Consolas, "Courier New", monospace; font-size: 13px; }
+  button, select, input[type="text"] { font: inherit; }
+  button { padding: 6px 14px; border: 1px solid #d1d1d1; border-radius: 4px; background: #fff; color: var(--text); cursor: pointer; margin: 4px 8px 4px 0; }
+  button.link { display: block; border: none; background: none; color: var(--accent); padding: 0; margin: 2px 0 0; text-decoration: underline; }
+  button:hover:not(:disabled) { background: #f5f5f5; }
+  button.link:hover:not(:disabled) { background: none; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type="text"] { padding: 5px 8px; border: 1px solid #d1d1d1; border-radius: 4px; width: 320px; max-width: 100%; }
+  select { padding: 4px 6px; border: 1px solid #d1d1d1; border-radius: 4px; }
+  .add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+  #log { font-family: Consolas, "Courier New", monospace; font-size: 12.5px; background: var(--panel); padding: 10px 12px; max-height: 300px; overflow: auto; white-space: pre-wrap; }
+  .hidden { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; }
+</style>
+</head>
+<body>
+<main id="page">
+  <h1>N:N Multi-Select names copy: steps for your tables</h1>
+  <p class="muted">The names copy plug-in comes with its Associate and Disassociate steps only: the host columns follow
+    links and unlinks made anywhere. To make them also follow deletes and renames of the linked records, this page
+    creates the plug-in's Delete and Update steps for your linked tables only (the tables whose names are copied into a
+    host column). The deletes and updates of every other table pay nothing.</p>
+  <div id="context" class="warning hidden"></div>
+
+  <div id="status" class="note" role="status">Reading the environment...</div>
+
+  <section id="main" class="hidden">
+    <h2>1. Relationships whose names are copied</h2>
+    <p class="muted">Found on the active forms that have the control with <em>Copy names into the host column</em> set
+      to Yes, plus the ones you add. The linked table is the one whose names are copied: it gets the steps.</p>
+    <table>
+      <thead><tr><th>Relationship</th><th>Host table and column</th><th>Linked table (gets the steps)</th><th>Found</th></tr></thead>
+      <tbody id="relationships"></tbody>
+    </table>
+    <div class="add">
+      <label for="addName">Add an N:N relationship by its schema name:</label>
+      <input type="text" id="addName" placeholder="for example new_project_skill" autocomplete="off" spellcheck="false">
+      <button type="button" id="addButton">Add</button>
+    </div>
+
+    <h2>2. Steps for the linked tables</h2>
+    <table>
+      <thead><tr><th class="check"><span class="sr-only">Selected</span></th><th>Linked table</th><th>Name column</th><th>Delete 1 of 2</th><th>Delete 2 of 2</th><th>Update (follow renames)</th></tr></thead>
+      <tbody id="tables"></tbody>
+    </table>
+    <div>
+      <button type="button" class="primary" id="createButton">Create or update the steps of the ticked tables</button>
+      <button type="button" id="removeButton">Remove the steps of the ticked tables</button>
+      <button type="button" id="removeAllButton">Remove all the steps made here</button>
+      <button type="button" id="refreshButton">Refresh</button>
+    </div>
+    <div class="add hidden" id="solutionChoice">
+      <label for="solutionSelect">This page is in more than one unmanaged solution. New steps go into:</label>
+      <select id="solutionSelect"></select>
+    </div>
+    <p class="muted" id="solutionNote"></p>
+
+    <h2>What was done</h2>
+    <div id="log" role="log" aria-live="polite">Nothing yet.</div>
+  </section>
+</main>
+<script>
+"use strict";
+(function () {
+  const API = "/api/data/v9.2/";
+  // The web resource name of this page, written in by the build (with the publisher's prefix).
+  const PAGE_NAME = "__STEPS_PAGE_NAME__".startsWith("__") ? "<prefix>_/NToNMultiSelect/namescopysteps.html" : "__STEPS_PAGE_NAME__";
+  const PLUGIN_TYPE = "NToNMultiSelect.NamesCopy.NamesCopyPlugin";
+  const CONTROL_NAME = ".NToNMultiSelect";
+  // New steps go into one solution: the unmanaged solution this page is in (found by its own web resource; chosen on the
+  // page when it is in several), otherwise (it is only in managed solutions here) a solution of their own, made when
+  // needed.
+  const TEMP_SOLUTION = "NToNMultiSelectTableSteps";
+  // Solutions that hold every unmanaged component.
+  const SYSTEM_SOLUTIONS = ["active", "default", "basic"];
+  // The steps this page creates for each linked table: the message and stage each part of the plug-in expects.
+  const KINDS = [
+    { key: "find", message: "Delete", stage: 10, label: "Delete 1 of 2 (find linked records)",
+      description: "Before a delete of this table, notes the records whose names column holds the name of the record being deleted. Works with step 2 of 2: keep both or neither." },
+    { key: "rebuild", message: "Delete", stage: 40, label: "Delete 2 of 2 (update their names)",
+      description: "After a delete of this table, writes the names columns of the records step 1 of 2 noted, without the deleted name. Works with step 1 of 2: keep both or neither." },
+    { key: "rename", message: "Update", stage: 20, label: "Update (follow renames)", filtered: true,
+      description: "Before an update of this table that sets its name, compares the saved name with the new one; when it changes, writes the new name into the names columns of the records linked to it." },
+  ];
+  const byKey = (key) => KINDS.find((k) => k.key === key);
+  // The Delete pair is created in this order (a lone Delete 2 of 2 finds nothing to do; a lone Delete 1 of 2 would
+  // read for nothing) and removed in the reverse order; Update comes last both times.
+  const CREATE_ORDER = ["rebuild", "find", "rename"].map(byKey);
+  const REMOVE_ORDER = ["find", "rebuild", "rename"].map(byKey);
+  // Namespace of the step ids (a name-based UUID of the table and the step): the same table always gets the same ids.
+  const STEP_NAMESPACE = "ebf70503-5125-409b-bb0c-02d5160925c8";
+  const ADDED_KEY = "NToNMultiSelect.steps.added." + location.host;
+  const CHOSEN_KEY = "NToNMultiSelect.steps.solution." + location.host;
+
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    pluginTypeId: null, assemblyId: null, relationships: [], added: [], n2n: null, tables: new Map(), steps: [], ids: new Map(),
+    // The unmanaged solutions this page is in ({ uniqueName, id, plugin: whether it also holds the plug-in }), the one
+    // chosen of them, NToNMultiSelectTableSteps ({ id, managed }, null when it is not there), the solution new steps go
+    // into ({ uniqueName, id (null until made), managed, temp }), whether a managed solution contains the plug-in (then
+    // this is most likely a test or production environment), and the publisher of a solution that contains it (for the
+    // solution of their own).
+    homes: [], chosen: null, temp: null, target: null, pluginManaged: false, holderPublisher: null, stepSolutions: new Map(),
+    checked: new Map(), busy: false, renderToken: 0,
+  };
+
+  // ------------------------------------------------------------------ Web API
+
+  async function api(method, path, body, options) {
+    const headers = { Accept: "application/json", "OData-MaxVersion": "4.0", "OData-Version": "4.0" };
+    if (body !== undefined) headers["Content-Type"] = "application/json; charset=utf-8";
+    // A PATCH only updates: it never creates a record that is not there.
+    if (method === "PATCH") headers["If-Match"] = "*";
+    if (options && options.maxPageSize) headers.Prefer = "odata.maxpagesize=" + options.maxPageSize;
+    const response = await fetch(path.startsWith("http") ? path : location.origin + API + path, {
+      method, headers, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const text = await response.text();
+    let json = null;
+    if (text) {
+      try { json = JSON.parse(text); } catch (e) { json = null; }
+    }
+    if (response.status === 404 && options && options.allow404) return null;
+    if (!response.ok) {
+      const error = new Error((json && json.error && json.error.message) || response.status + " " + response.statusText);
+      error.status = response.status;
+      throw error;
+    }
+    return json || {};
+  }
+
+  /** Every row of a query, following the next-page links. */
+  async function all(path) {
+    const rows = [];
+    let next = path;
+    while (next) {
+      const page = await api("GET", next, undefined, { maxPageSize: 500 });
+      rows.push(...(page.value || []));
+      next = page["@odata.nextLink"] || null;
+    }
+    return rows;
+  }
+
+  const quote = (value) => "'" + String(value).replace(/'/g, "''") + "'";
+
+  /** An error as an administrator can act on it. */
+  function explain(error) {
+    if (error.status === 401) return "You are no longer signed in. Reload the page.";
+    if (error.status === 403) return "You do not have the privileges to change plug-in steps or solutions (System Customizer or System Administrator is needed). " + error.message;
+    return error.message;
+  }
+
+  // ------------------------------------------------------------------ the control's settings (as the plug-in reads them)
+
+  /**
+   * The controls of a form (its form XML) that ask for the names copy, with the rules of the plug-in
+   * (NamesCopyHelpers.ParseFormXml): N:N Multi-Select of any publisher, a relationship name typed as a static value, a
+   * bound column, and "Copy names into the host column" (writeSummary) set to 1 as a static value. Malformed XML gives
+   * nothing.
+   */
+  function parseFormXml(formXml) {
+    const settings = [];
+    if (!formXml) return settings;
+    const doc = new DOMParser().parseFromString(formXml, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) return settings;
+    const child = (parent, localName) => Array.from(parent.children).find((e) => e.localName === localName) || null;
+    const staticValue = (parameters, localName) => {
+      const parameter = child(parameters, localName);
+      return parameter && String(parameter.getAttribute("static") || "").toLowerCase() === "true" ? parameter.textContent.trim() : null;
+    };
+    for (const control of Array.from(doc.getElementsByTagNameNS("*", "customControl"))) {
+      const name = control.getAttribute("name");
+      const parameters = child(control, "parameters");
+      if (!name || !name.toLowerCase().endsWith(CONTROL_NAME.toLowerCase()) || !parameters) continue;
+      const relationship = staticValue(parameters, "relationshipName");
+      const value = child(parameters, "value");
+      const column = value ? value.textContent.trim().toLowerCase() : "";
+      if (!relationship || !column || staticValue(parameters, "writeSummary") !== "1") continue;
+      if (!settings.some((s) => s.relationship.toLowerCase() === relationship.toLowerCase() && s.column === column)) {
+        settings.push({ relationship, column });
+      }
+    }
+    return settings;
+  }
+
+  /** The table whose names a host table copies through a relationship: the other side (Entity2 when it is both). */
+  function linkedTableOf(relationship, hostTable) {
+    if (relationship.Entity1LogicalName === hostTable) return relationship.Entity2LogicalName;
+    if (relationship.Entity2LogicalName === hostTable) return relationship.Entity1LogicalName;
+    return null;
+  }
+
+  // ------------------------------------------------------------------ step ids
+
+  function uuidBytes(uuid) {
+    const hex = uuid.replace(/-/g, "");
+    return Uint8Array.from({ length: 16 }, (_, i) => parseInt(hex.substr(i * 2, 2), 16));
+  }
+
+  /** A name-based UUID (version 5, SHA-1) of the table and the step: the ids of a table's steps never change. */
+  async function stepId(table, kind) {
+    const name = new TextEncoder().encode(table.toLowerCase() + "|" + kind);
+    const data = new Uint8Array(16 + name.length);
+    data.set(uuidBytes(STEP_NAMESPACE), 0);
+    data.set(name, 16);
+    const hash = new Uint8Array(await crypto.subtle.digest("SHA-1", data)).slice(0, 16);
+    hash[6] = (hash[6] & 0x0f) | 0x50;
+    hash[8] = (hash[8] & 0x3f) | 0x80;
+    const hex = Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
+    return hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" + hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" + hex.substr(20, 12);
+  }
+
+  /** The id of a step of this page, cached. */
+  async function idOf(table, kind) {
+    const key = table + "|" + kind.key;
+    if (!state.ids.has(key)) state.ids.set(key, await stepId(table, kind.key));
+    return state.ids.get(key);
+  }
+
+  // ------------------------------------------------------------------ reading the environment
+
+  async function n2nRelationships() {
+    if (!state.n2n) {
+      state.n2n = await all("RelationshipDefinitions/Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata?$select=SchemaName,Entity1LogicalName,Entity2LogicalName");
+    }
+    return state.n2n;
+  }
+
+  async function findRelationship(name) {
+    return (await n2nRelationships()).find((r) => r.SchemaName.toLowerCase() === String(name).toLowerCase()) || null;
+  }
+
+  /** The relationships whose names the active forms copy, with their host table and column and their linked table. */
+  async function readForms() {
+    // As the plug-in: the active forms whose XML has the control (all active forms, filtered here, if the service
+    // does not take the text filter on the form XML).
+    const select = "systemforms?$select=formid,name,objecttypecode,formxml&$filter=formactivationstate eq 1";
+    let forms;
+    try {
+      forms = await all(select + " and contains(formxml," + quote(CONTROL_NAME) + ")");
+    } catch (error) {
+      forms = (await all(select)).filter((f) => (f.formxml || "").toLowerCase().includes(CONTROL_NAME.toLowerCase()));
+    }
+    const found = new Map();
+    for (const form of forms) {
+      for (const setting of parseFormXml(form.formxml)) {
+        const key = setting.relationship.toLowerCase() + "|" + form.objecttypecode + "|" + setting.column;
+        if (!found.has(key)) found.set(key, { relationship: setting.relationship, host: form.objecttypecode, column: setting.column, forms: [] });
+        if (!found.get(key).forms.includes(form.name)) found.get(key).forms.push(form.name);
+      }
+    }
+    const rows = [];
+    for (const row of found.values()) {
+      const metadata = await findRelationship(row.relationship);
+      row.schemaName = metadata ? metadata.SchemaName : row.relationship;
+      row.linked = metadata ? linkedTableOf(metadata, row.host) : null;
+      row.problem = !metadata ? "Not an N:N relationship of this environment" : !row.linked ? "Does not link " + row.host : null;
+      rows.push(row);
+    }
+    return rows.sort((a, b) => a.schemaName.localeCompare(b.schemaName));
+  }
+
+  async function tableInfo(table) {
+    if (!state.tables.has(table)) {
+      const t = await api("GET", "EntityDefinitions(LogicalName=" + quote(table) + ")?$select=LogicalName,PrimaryNameAttribute,DisplayName", undefined, { allow404: true });
+      state.tables.set(table, t ? {
+        logicalName: t.LogicalName,
+        nameColumn: t.PrimaryNameAttribute || null,
+        displayName: (t.DisplayName && t.DisplayName.UserLocalizedLabel && t.DisplayName.UserLocalizedLabel.Label) || t.LogicalName,
+      } : null);
+    }
+    return state.tables.get(table);
+  }
+
+  /** A solution by id ({ uniqueName, managed, shown }), cached: shown is false for the system solutions. */
+  const solutionCache = new Map();
+  async function solutionInfo(id) {
+    if (!solutionCache.has(id)) {
+      const s = await api("GET", "solutions(" + id + ")?$select=uniquename,ismanaged,isvisible,_publisherid_value", undefined, { allow404: true });
+      solutionCache.set(id, s ? {
+        uniqueName: s.uniquename, managed: !!s.ismanaged, publisher: s._publisherid_value,
+        shown: s.isvisible !== false && !SYSTEM_SOLUTIONS.includes(String(s.uniquename).toLowerCase()),
+      } : null);
+    }
+    return solutionCache.get(id);
+  }
+
+  /**
+   * The plug-in's steps and the solutions each step of a table is in (as you see them in the maker portal), the
+   * solutions that contain the plug-in assembly (whether one is managed, and the publisher of one), and the solutions
+   * new steps can go into: the unmanaged solutions this page is in, otherwise NToNMultiSelectTableSteps (made when a new
+   * step needs it). The page never moves a step from one solution to another: you do that yourself. Everything is read
+   * first and kept only when all of it could be read.
+   */
+  async function readSteps() {
+    const steps = await all("sdkmessageprocessingsteps?$select=sdkmessageprocessingstepid,name,stage,mode,statecode,filteringattributes,ismanaged&$expand=sdkmessageid($select=name),sdkmessagefilterid($select=primaryobjecttypecode)&$filter=_plugintypeid_value eq " + state.pluginTypeId);
+    const stepSolutions = new Map();
+    for (const step of steps.filter((s) => s.sdkmessagefilterid && s.sdkmessagefilterid.primaryobjecttypecode)) {
+      const rows = await all("solutioncomponents?$select=_solutionid_value&$filter=componenttype eq 92 and objectid eq " + step.sdkmessageprocessingstepid);
+      const names = [];
+      for (const row of rows) {
+        const info = await solutionInfo(row._solutionid_value);
+        if (info && info.shown && !names.includes(info.uniqueName)) names.push(info.uniqueName);
+      }
+      stepSolutions.set(step.sdkmessageprocessingstepid, names.sort());
+    }
+    const holders = new Set((await all("solutioncomponents?$select=_solutionid_value&$filter=componenttype eq 91 and objectid eq " + state.assemblyId)).map((h) => h._solutionid_value));
+    let pluginManaged = false;
+    let holderPublisher = null;
+    for (const id of holders) {
+      const info = await solutionInfo(id);
+      if (!info || !info.shown) continue;
+      if (info.managed) pluginManaged = true;
+      if (!holderPublisher) holderPublisher = info.publisher;
+    }
+    // The unmanaged solutions this page is in, found by its own web resource: the one that also holds the plug-in
+    // first, then by name.
+    const homes = [];
+    const page = (await api("GET", "webresourceset?$select=webresourceid&$filter=name eq " + quote(PAGE_NAME))).value[0];
+    if (page) {
+      for (const row of await all("solutioncomponents?$select=_solutionid_value&$filter=componenttype eq 61 and objectid eq " + page.webresourceid)) {
+        const info = await solutionInfo(row._solutionid_value);
+        if (info && info.shown && !info.managed && !homes.some((h) => h.id === row._solutionid_value)) {
+          homes.push({ uniqueName: info.uniqueName, id: row._solutionid_value, plugin: holders.has(row._solutionid_value) });
+        }
+      }
+    }
+    homes.sort((a, b) => Number(b.plugin) - Number(a.plugin) || a.uniqueName.localeCompare(b.uniqueName));
+    const temp = (await api("GET", "solutions?$select=solutionid,ismanaged&$filter=uniquename eq " + quote(TEMP_SOLUTION))).value[0];
+    Object.assign(state, { steps, stepSolutions, pluginManaged, holderPublisher, homes, temp: temp ? { id: temp.solutionid, managed: !!temp.ismanaged } : null });
+    pickTarget();
+  }
+
+  /**
+   * The solution new steps go into: the one chosen of the unmanaged solutions this page is in (in this browser; the
+   * first one when none was chosen), otherwise NToNMultiSelectTableSteps.
+   */
+  function pickTarget() {
+    if (state.chosen === null) {
+      try { state.chosen = localStorage.getItem(CHOSEN_KEY) || ""; } catch (e) { state.chosen = ""; }
+    }
+    const home = state.homes.find((h) => h.uniqueName === state.chosen) || state.homes[0];
+    state.target = home
+      ? { uniqueName: home.uniqueName, id: home.id, managed: false, temp: false }
+      : { uniqueName: TEMP_SOLUTION, id: state.temp ? state.temp.id : null, managed: !!(state.temp && state.temp.managed), temp: true };
+  }
+
+  /** Chooses which of the unmanaged solutions this page is in gets the new steps (kept in this browser). */
+  function choose(uniqueName) {
+    state.chosen = uniqueName;
+    try { localStorage.setItem(CHOSEN_KEY, uniqueName); } catch (e) { /* private browsing: kept for this visit only */ }
+    pickTarget();
+    log("New steps go into " + state.target.uniqueName + ".");
+    render();
+  }
+
+  /** The solution new steps go into, made with the publisher of a solution that contains the plug-in when needed. */
+  async function ensureTarget() {
+    const target = state.target;
+    if (target.managed || target.id) return;
+    let publisher = state.holderPublisher;
+    if (!publisher) {
+      const rows = (await api("GET", "publishers?$select=publisherid&$filter=startswith(uniquename,'DefaultPublisher')")).value;
+      if (!rows.length) throw new Error("No publisher was found for " + TEMP_SOLUTION + ".");
+      publisher = rows[0].publisherid;
+    }
+    await api("POST", "solutions", {
+      uniquename: TEMP_SOLUTION,
+      friendlyname: "N:N Multi-Select names copy: steps for your tables",
+      version: "1.0.0.0",
+      description: "The Delete and Update steps of the names copy plug-in for the linked tables, made by the steps page where it is in no unmanaged solution. Move them to the solution you deploy.",
+      "publisherid@odata.bind": "/publishers(" + publisher + ")",
+    });
+    target.id = (await api("GET", "solutions?$select=solutionid&$filter=uniquename eq " + quote(TEMP_SOLUTION))).value[0].solutionid;
+    log("Created the unmanaged solution " + TEMP_SOLUTION + " (this page is in no unmanaged solution here).");
+  }
+
+  /** Where new steps go, as a sentence. */
+  function targetText() {
+    const t = state.target;
+    const moves = " Steps that already exist stay in the solutions they are in: the page never moves them.";
+    if (!t.temp) {
+      return "New steps go into " + t.uniqueName + (state.homes.length > 1
+        ? ", the solution chosen above (this page is in " + state.homes.length + " unmanaged solutions)."
+        : ", the solution this page is in.") + moves;
+    }
+    if (t.managed) return TEMP_SOLUTION + " is managed here: its steps are changed in development. New steps made here are not added to a solution." + moves;
+    return "This page is in no unmanaged solution here, so new steps go into the solution " + TEMP_SOLUTION +
+      (t.id ? "" : ", made when a new step needs it") + "." + moves;
+  }
+
+  const stepById = (id) => state.steps.find((s) => s.sdkmessageprocessingstepid === id) || null;
+
+  /** The steps of this page for a table (missing ones left out). */
+  async function pageSteps(table) {
+    const found = [];
+    for (const kind of KINDS) {
+      const step = stepById(await idOf(table, kind));
+      if (step) found.push({ kind, step });
+    }
+    return found;
+  }
+
+  // ------------------------------------------------------------------ hand-added relationships, kept in this browser
+
+  function saveAdded() {
+    try {
+      localStorage.setItem(ADDED_KEY, JSON.stringify(state.added.map((r) => ({ schemaName: r.schemaName, choice: r.choice }))));
+    } catch (e) { /* private browsing: the list is kept for this visit only */ }
+  }
+
+  async function loadAdded() {
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem(ADDED_KEY) || "[]"); } catch (e) { saved = []; }
+    state.added = [];
+    for (const item of saved) {
+      const metadata = await findRelationship(item.schemaName);
+      if (metadata) state.added.push(addedRow(metadata, item.choice));
+    }
+  }
+
+  function addedRow(metadata, choice) {
+    const a = metadata.Entity1LogicalName;
+    const b = metadata.Entity2LogicalName;
+    const choices = a === b ? [{ value: a, label: a }]
+      : [{ value: "", label: "Choose the table whose names are copied" }, { value: b, label: b }, { value: a, label: a }, { value: a + "," + b, label: "Both: " + a + " and " + b }];
+    const value = a === b ? a : choices.some((c) => c.value === choice) ? choice : "";
+    return { schemaName: metadata.SchemaName, choices, choice: value, targets: value ? value.split(",") : [] };
+  }
+
+  // ------------------------------------------------------------------ what the page shows
+
+  /** The linked tables of the relationships, plus the tables that already have steps of this page. */
+  async function linkedTables() {
+    const tables = new Map();
+    const add = (table, from) => {
+      if (!tables.has(table)) tables.set(table, { table, from: [] });
+      if (from && !tables.get(table).from.includes(from)) tables.get(table).from.push(from);
+    };
+    for (const row of state.relationships) if (row.linked) add(row.linked, row.schemaName);
+    for (const row of state.added) for (const table of row.targets) add(table, row.schemaName);
+    for (const step of state.steps) {
+      const table = step.sdkmessagefilterid && step.sdkmessagefilterid.primaryobjecttypecode;
+      if (!table || tables.has(table)) continue;
+      for (const kind of KINDS) {
+        if (step.sdkmessageprocessingstepid === await idOf(table, kind)) {
+          add(table, null);
+          break;
+        }
+      }
+    }
+    return Array.from(tables.values()).sort((a, b) => a.table.localeCompare(b.table));
+  }
+
+  /**
+   * The state of one step of this page: missing, on, off, managed, on another message (changed with another tool:
+   * Create can't correct that, see wrongMessages), or with other settings than this page gives it.
+   */
+  async function stepState(table, kind, info) {
+    const step = stepById(await idOf(table, kind));
+    if (!step) return { text: "Missing", css: "muted" };
+    const message = step.sdkmessageid && step.sdkmessageid.name;
+    const same = step.stage === kind.stage && step.mode === 0 && message === kind.message &&
+      step.sdkmessagefilterid && step.sdkmessagefilterid.primaryobjecttypecode === table &&
+      (step.filteringattributes || "") === (kind.filtered ? (info && info.nameColumn) || "" : "");
+    let text = message !== kind.message ? "On " + message + ", not " + kind.message + ": Remove, then Create" :
+      !same ? "Other settings: Create updates it" : step.statecode === 0 ? "On" : "Off";
+    let css = !same ? "error" : step.statecode === 0 ? "ok" : "muted";
+    // Where the step is, wherever it was moved (it is found by its id). A step in no solution (its adding failed) is
+    // the only one Create puts into a solution.
+    const solutions = state.stepSolutions.get(step.sdkmessageprocessingstepid) || [];
+    let detail = (step.ismanaged ? "Managed, in " : "In ") + (solutions.length ? solutions.join(", ") : "no solution");
+    if (step.ismanaged) detail += ": change it in development";
+    else if (!solutions.length && !state.target.managed && message === kind.message) {
+      detail += ": Create adds it to " + state.target.uniqueName;
+      css = "error";
+    }
+    return { text, css, detail };
+  }
+
+  function cell(text, css, detail) {
+    const td = document.createElement("td");
+    if (css) td.className = css;
+    td.appendChild(document.createTextNode(text));
+    if (detail) {
+      const small = document.createElement("small");
+      small.textContent = detail;
+      td.appendChild(small);
+    }
+    return td;
+  }
+
+  function placeholder(tbody, text, columns) {
+    const tr = document.createElement("tr");
+    const td = cell(text, "muted");
+    td.colSpan = columns;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+
+  /** Draws the page from the state. A newer call replaces an older one that has not finished. */
+  async function render() {
+    const token = ++state.renderToken;
+    const relationships = document.createElement("tbody");
+    const tables = document.createElement("tbody");
+
+    // 1. Relationships.
+    const rows = state.relationships.concat(state.added);
+    if (!rows.length) placeholder(relationships, "No active form copies names, and none was added.", 4);
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      tr.appendChild(cell(row.schemaName));
+      tr.appendChild(row.host ? cell(row.host + "." + row.column) : cell("(added by you)", "muted"));
+      if (row.problem) {
+        tr.appendChild(cell(row.problem, "error"));
+      } else if (row.choices) {
+        const td = document.createElement("td");
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", "Linked table of " + row.schemaName);
+        for (const choice of row.choices) {
+          const option = document.createElement("option");
+          option.value = choice.value;
+          option.textContent = choice.label;
+          option.selected = choice.value === row.choice;
+          select.appendChild(option);
+        }
+        select.addEventListener("change", () => {
+          row.choice = select.value;
+          row.targets = row.choice ? row.choice.split(",") : [];
+          saveAdded();
+          render();
+        });
+        td.appendChild(select);
+        tr.appendChild(td);
+      } else {
+        tr.appendChild(cell(row.linked));
+      }
+      if (row.forms) {
+        tr.appendChild(cell("Form: " + row.forms.join(", ")));
+      } else {
+        // The plug-in acts on a relationship only where an active form copies names through it.
+        const onForm = state.relationships.some((r) => r.schemaName.toLowerCase() === row.schemaName.toLowerCase());
+        const td = cell("Added by you", onForm ? "" : "error",
+          onForm ? null : "No active form copies names through it yet: its steps do nothing until one does.");
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "link";
+        remove.textContent = "Take off the list";
+        remove.addEventListener("click", () => {
+          state.added = state.added.filter((r) => r !== row);
+          saveAdded();
+          log("Took " + row.schemaName + " off the list (its steps, if any, are still there).");
+          render();
+        });
+        td.appendChild(remove);
+        tr.appendChild(td);
+      }
+      relationships.appendChild(tr);
+    }
+
+    // 2. Linked tables and their steps.
+    const entries = await linkedTables();
+    if (!entries.length) placeholder(tables, "No linked table yet.", 6);
+    for (const entry of entries) {
+      const info = await tableInfo(entry.table);
+      const existing = await pageSteps(entry.table);
+      const managed = existing.length > 0 && existing.every((e) => e.step.ismanaged);
+      const tr = document.createElement("tr");
+      const check = document.createElement("td");
+      check.className = "check";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = entry.table;
+      box.dataset.locked = !info || managed ? "1" : "0";
+      box.checked = box.dataset.locked !== "1" && (state.checked.has(entry.table) ? state.checked.get(entry.table) : entry.from.length > 0 && !!info.nameColumn);
+      box.setAttribute("aria-label", "Select " + entry.table);
+      box.addEventListener("change", () => state.checked.set(entry.table, box.checked));
+      check.appendChild(box);
+      tr.appendChild(check);
+      tr.appendChild(cell((info ? info.displayName + " " : "") + "(" + entry.table + ")", "",
+        entry.from.length ? "Linked through " + entry.from.join(", ") : "No relationship above uses it: its steps can be removed"));
+      tr.appendChild(info ? cell(info.nameColumn || "None: names cannot be copied", info.nameColumn ? "" : "error") : cell("Table not found", "error"));
+      for (const kind of KINDS) {
+        const s = await stepState(entry.table, kind, info);
+        tr.appendChild(cell(s.text, s.css, s.detail));
+      }
+      tables.appendChild(tr);
+    }
+
+    // The plug-in's other Delete and Update steps, if any.
+    const others = await otherSteps();
+
+    // Only the newest drawing is shown.
+    if (token !== state.renderToken) return;
+    $("relationships").replaceWith(relationships);
+    relationships.id = "relationships";
+    $("tables").replaceWith(tables);
+    tables.id = "tables";
+    $("context").textContent = others.length
+      ? "The plug-in also has Delete or Update steps that this page did not make: " + others.join("; ") + ". Those that are on " +
+        "run as well as the steps made here: a table that has both is handled twice (same result, twice the time), and a " +
+        "step for every table makes every delete or update in the environment slower. Turn off or delete the ones you no " +
+        "longer need (in the solution's plug-in steps, or with the Plugin Registration Tool)."
+      : "";
+    $("context").classList.toggle("hidden", !others.length);
+    const select = $("solutionSelect");
+    select.replaceChildren(...state.homes.map((h) => {
+      const option = document.createElement("option");
+      option.value = h.uniqueName;
+      option.textContent = h.uniqueName + (h.plugin ? " (with the plug-in)" : "");
+      option.selected = h.uniqueName === state.target.uniqueName;
+      return option;
+    }));
+    $("solutionChoice").classList.toggle("hidden", state.homes.length < 2);
+    $("solutionNote").textContent = targetText() +
+      (state.target.temp && state.pluginManaged ? " The plug-in comes from a managed solution here, so this is most likely a test or production environment: the usual way is to create the steps in development and deploy them with the plug-in." : "") +
+      " Before you uninstall the plug-in, remove the steps made here: they depend on it.";
+    setBusy(state.busy);
+  }
+
+  /**
+   * The plug-in's Delete and Update steps that this page did not make (for example registered by hand with the Plugin
+   * Registration Tool), as "name (every table or only <table>, on or off)".
+   */
+  async function otherSteps() {
+    const others = [];
+    for (const step of state.steps) {
+      const message = step.sdkmessageid && step.sdkmessageid.name;
+      if (message !== "Delete" && message !== "Update") continue;
+      const table = step.sdkmessagefilterid && step.sdkmessagefilterid.primaryobjecttypecode;
+      let mine = false;
+      if (table) for (const kind of KINDS) if (step.sdkmessageprocessingstepid === await idOf(table, kind)) mine = true;
+      if (!mine) others.push(step.name + " (" + (table ? "only " + table : "every table") + ", " + (step.statecode === 0 ? "on" : "off") + ")");
+    }
+    return others;
+  }
+
+  // ------------------------------------------------------------------ actions
+
+  function log(text, css) {
+    const box = $("log");
+    if (box.dataset.started !== "1") {
+      box.textContent = "";
+      box.dataset.started = "1";
+    }
+    const line = document.createElement("div");
+    if (css) line.className = css;
+    line.textContent = new Date().toLocaleTimeString() + "  " + text;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  /** Turns the page's controls off while it works. The checkboxes of tables that cannot be changed here stay off. */
+  function setBusy(busy) {
+    state.busy = busy;
+    $("page").setAttribute("aria-busy", busy ? "true" : "false");
+    for (const control of document.querySelectorAll("button, select, #main input")) {
+      control.disabled = busy || control.dataset.locked === "1";
+    }
+  }
+
+  async function run(work) {
+    if (state.busy) return;
+    setBusy(true);
+    try {
+      await work();
+    } catch (error) {
+      log("Failed: " + explain(error), "error");
+    } finally {
+      // The page shows the new state before its buttons can be used again.
+      try {
+        await readSteps();
+        await render();
+      } catch (error) {
+        log("Could not read the steps again: " + explain(error), "error");
+      }
+      setBusy(false);
+    }
+  }
+
+  const ticked = () => Array.from(document.querySelectorAll("#tables input[type=checkbox]:checked:not(:disabled)")).map((b) => b.value);
+
+  const messageIds = {};
+  async function messageId(name) {
+    if (!messageIds[name]) messageIds[name] = (await api("GET", "sdkmessages?$select=sdkmessageid&$filter=name eq " + quote(name))).value[0].sdkmessageid;
+    return messageIds[name];
+  }
+
+  /** The message filter of a message and table, or an explanation of why there is none. */
+  async function filterOf(message, table) {
+    const rows = (await api("GET", "sdkmessagefilters?$select=sdkmessagefilterid,iscustomprocessingstepallowed&$filter=_sdkmessageid_value eq " + await messageId(message) + " and primaryobjecttypecode eq " + quote(table))).value;
+    if (!rows.length || rows[0].iscustomprocessingstepallowed === false) return { error: "Dataverse does not allow plug-in steps on " + message + " of " + table + "." };
+    return { id: rows[0].sdkmessagefilterid };
+  }
+
+  async function createSteps() {
+    const tables = ticked();
+    if (!tables.length) return log("Tick the tables first.", "error");
+    let question = "Create or update the Delete and Update steps for: " + tables.join(", ") + "?\n\n" + targetText();
+    if (state.target.temp && state.pluginManaged) {
+      question += "\n\nThe plug-in comes from a managed solution here, so this is probably a test or production environment. The usual way is to create the steps in development and deploy them with the plug-in: steps created here get the same ids, so they would block that import. Create them here anyway?";
+    }
+    if (!confirm(question)) return log("Cancelled.");
+    await run(async () => {
+      // 1. Everything a table needs is checked before anything is written: a table that cannot have all three steps
+      // gets none.
+      const plans = [];
+      for (const table of tables) {
+        const info = await tableInfo(table);
+        if (!info || !info.nameColumn) {
+          log(table + ": skipped, the table has no primary name column, so no names of it can be copied.", "error");
+          continue;
+        }
+        const filters = { Delete: await filterOf("Delete", table), Update: await filterOf("Update", table) };
+        const problem = filters.Delete.error || filters.Update.error;
+        if (problem) {
+          log(table + ": skipped. " + problem, "error");
+          continue;
+        }
+        const existing = await pageSteps(table);
+        if (existing.some((e) => e.step.ismanaged)) {
+          log(table + ": skipped, its steps come from a managed solution here. Change them in development and deploy them again.", "error");
+          continue;
+        }
+        const wrong = wrongMessages(existing);
+        if (wrong) {
+          log(table + ": skipped, " + wrong + ". A step's message can't be changed: remove the table's steps (Remove the steps of the ticked tables), then Create makes them again.", "error");
+          continue;
+        }
+        plans.push({ table, info, filters });
+      }
+      if (!plans.length) return log("Nothing was changed.");
+
+      // 2. The steps, table by table: a table that fails does not stop the others.
+      for (const plan of plans) {
+        try {
+          for (const kind of CREATE_ORDER) await writeStep(plan, kind);
+          log(plan.table + ": done.", "ok");
+        } catch (error) {
+          log(plan.table + ": stopped: " + explain(error) + (error.final ? "" : " Run Create again to finish it."), "error");
+        }
+      }
+      log("Dataverse uses new or changed steps within a short time.");
+    });
+  }
+
+  /**
+   * The steps of this page on another message than their own (changed with another tool), as "<step> is registered on
+   * <message>", or "" when there is none. The page doesn't delete them itself: you remove them, then Create.
+   */
+  function wrongMessages(existing) {
+    return existing.filter((e) => e.step.sdkmessageid && e.step.sdkmessageid.name !== e.kind.message)
+      .map((e) => e.kind.label + " is registered on " + e.step.sdkmessageid.name).join(" and ");
+  }
+
+  async function writeStep(plan, kind) {
+    const id = await idOf(plan.table, kind);
+    const fields = {
+      name: "N:N Multi-Select names copy: " + kind.label + " for " + plan.table,
+      description: kind.description,
+      stage: kind.stage,
+      mode: 0,
+      rank: 1,
+      supporteddeployment: 0,
+      asyncautodelete: false,
+      filteringattributes: kind.filtered ? plan.info.nameColumn : null,
+      "sdkmessagefilterid@odata.bind": "/sdkmessagefilters(" + plan.filters[kind.message].id + ")",
+    };
+    const existing = await api("GET", "sdkmessageprocessingsteps(" + id + ")?$select=statecode,ismanaged&$expand=sdkmessageid($select=name)", undefined, { allow404: true });
+    // Managed steps are never changed here (also when one came with an import since the page read the steps).
+    if (existing && existing.ismanaged) throw new Error(kind.label + " comes from a managed solution here: change it in development.");
+    // Another message can't be set on a step, and the page doesn't delete it (also when it was changed since the page
+    // read the steps): you remove it, then Create.
+    if (existing && existing.sdkmessageid && existing.sdkmessageid.name !== kind.message) {
+      const error = new Error(kind.label + " is registered on " + existing.sdkmessageid.name + ": remove the table's steps, then Create makes them again.");
+      // Running Create again doesn't help here (see createSteps).
+      error.final = true;
+      throw error;
+    }
+    let what;
+    if (existing) {
+      await api("PATCH", "sdkmessageprocessingsteps(" + id + ")", fields);
+      what = "updated";
+      if (existing.statecode !== 0) {
+        await api("PATCH", "sdkmessageprocessingsteps(" + id + ")", { statecode: 0, statuscode: 1 });
+        what += " and turned on";
+      }
+    } else {
+      await api("POST", "sdkmessageprocessingsteps", Object.assign({
+        sdkmessageprocessingstepid: id,
+        "eventhandler_plugintype@odata.bind": "/plugintypes(" + state.pluginTypeId + ")",
+        "sdkmessageid@odata.bind": "/sdkmessages(" + await messageId(kind.message) + ")",
+      }, fields));
+      what = "created";
+    }
+    log(plan.table + ": " + kind.label + " " + what + (kind.filtered ? ", only when " + plan.info.nameColumn + " changes" : "") + ".", "ok");
+    // A new step goes into the solution this page is in (the chosen one when it is in several), or
+    // NToNMultiSelectTableSteps where it is in none. A step that already exists stays in the solutions it is in (you
+    // move steps yourself); only one in no solution at all (its adding failed before) is added. Nothing is ever taken
+    // out of a solution.
+    const target = state.target;
+    const inSolutions = state.stepSolutions.get(id) || [];
+    if (target.managed || (what !== "created" && inSolutions.length)) return;
+    // NToNMultiSelectTableSteps is made only when a step has to go into it.
+    if (!target.id) await ensureTarget();
+    try {
+      await api("POST", "AddSolutionComponent", { ComponentId: id, ComponentType: 92, SolutionUniqueName: target.uniqueName, AddRequiredComponents: false, DoNotIncludeSubcomponents: false });
+      log(plan.table + ": " + kind.label + " added to " + target.uniqueName + ".", "ok");
+    } catch (error) {
+      log(plan.table + ": " + kind.label + " could not be added to " + target.uniqueName + ": " + explain(error) + " Run Create again.", "error");
+    }
+  }
+
+  async function removeSteps(tables, everything) {
+    if (!tables.length) return log(everything ? "There are no steps made here to remove." : "Tick the tables first.", everything ? "" : "error");
+    const question = "Remove the Delete and Update steps of: " + tables.join(", ") + "? Deletes and renames of their records are then no longer followed in the host columns.";
+    if (!confirm(question)) return log("Cancelled.");
+    await run(async () => {
+      for (const table of tables) {
+        try {
+          let removed = 0;
+          for (const kind of REMOVE_ORDER) {
+            const step = stepById(await idOf(table, kind));
+            if (!step) continue;
+            if (step.ismanaged) {
+              log(table + ": " + kind.label + " comes from a managed solution here: remove it in development and deploy again.", "error");
+              continue;
+            }
+            await api("DELETE", "sdkmessageprocessingsteps(" + step.sdkmessageprocessingstepid + ")", undefined, { allow404: true });
+            removed++;
+            log(table + ": " + kind.label + " removed.", "ok");
+          }
+          if (!removed) log(table + ": no steps to remove.");
+        } catch (error) {
+          log(table + ": stopped: " + explain(error) + " Run Remove again.", "error");
+        }
+      }
+    });
+  }
+
+  async function removeAll() {
+    const tables = [];
+    for (const entry of await linkedTables()) {
+      if ((await pageSteps(entry.table)).some((e) => !e.step.ismanaged)) tables.push(entry.table);
+    }
+    await removeSteps(tables, true);
+  }
+
+  async function addRelationship() {
+    const name = $("addName").value.trim();
+    if (!name) return;
+    await run(async () => {
+      const metadata = await findRelationship(name);
+      if (!metadata) throw new Error(name + " is not an N:N relationship of this environment (check the schema name).");
+      if (state.added.some((r) => r.schemaName.toLowerCase() === metadata.SchemaName.toLowerCase())) {
+        log(metadata.SchemaName + " is already in the list.");
+        return;
+      }
+      const fromForms = state.relationships.find((r) => r.schemaName.toLowerCase() === metadata.SchemaName.toLowerCase() && r.linked);
+      const row = addedRow(metadata, fromForms ? fromForms.linked : "");
+      state.added.push(row);
+      saveAdded();
+      $("addName").value = "";
+      log("Added " + metadata.SchemaName + " (" + metadata.Entity1LogicalName + " and " + metadata.Entity2LogicalName + ")" + (row.choice ? "." : ": choose its linked table."));
+    });
+  }
+
+  // ------------------------------------------------------------------ start
+
+  async function start() {
+    const status = $("status");
+    // The page talks to Dataverse from the environment's own address. Elsewhere (a preview, such as the one of the
+    // maker portal, or the file opened from disk) it cannot, so it says where to open it.
+    if (!/^https?:$/.test(location.protocol) || !/\/WebResources\//i.test(location.pathname)) {
+      status.className = "warning";
+      status.textContent = "Open this page at your environment's address: https://<your environment>/WebResources/" + PAGE_NAME +
+        " (for example https://contoso.crm.dynamics.com/WebResources/" + PAGE_NAME + "). A preview, such as the one in the maker portal, cannot reach Dataverse.";
+      return;
+    }
+    try {
+      const types = (await api("GET", "plugintypes?$select=plugintypeid,_pluginassemblyid_value&$filter=typename eq " + quote(PLUGIN_TYPE))).value;
+      if (!types.length) {
+        status.className = "warning";
+        status.textContent = "The names copy plug-in is not installed in this environment. Import the solution with the plug-in first, then open this page again.";
+        return;
+      }
+      state.pluginTypeId = types[0].plugintypeid;
+      state.assemblyId = types[0]._pluginassemblyid_value;
+      state.relationships = await readForms();
+      await loadAdded();
+      await readSteps();
+      // Shown once it is drawn, so that nothing can be clicked before the tables are there.
+      await render();
+      status.className = "note";
+      status.textContent = "Only System Customizers and System Administrators can create or remove steps.";
+      $("main").classList.remove("hidden");
+    } catch (error) {
+      status.className = "warning";
+      status.textContent = "Could not read the environment: " + explain(error);
+    }
+  }
+
+  $("createButton").addEventListener("click", createSteps);
+  $("removeButton").addEventListener("click", () => removeSteps(ticked(), false));
+  $("removeAllButton").addEventListener("click", removeAll);
+  $("refreshButton").addEventListener("click", () => run(async () => {
+    state.n2n = null;
+    state.tables.clear();
+    state.relationships = await readForms();
+    await loadAdded();
+    log("Read the forms and the steps again.");
+  }));
+  $("addButton").addEventListener("click", addRelationship);
+  $("solutionSelect").addEventListener("change", () => choose($("solutionSelect").value));
+  $("addName").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addRelationship();
+  });
+
+  // The form parsing and the step ids, for checks from the browser's developer tools.
+  window.NToNMultiSelectSteps = { parseFormXml, linkedTableOf, stepId };
+  start();
+})();
+</script>
+</body>
+</html>

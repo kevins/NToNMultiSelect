@@ -34,6 +34,19 @@ interface ODataCollection<T> {
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** Options of a write (see DataverseClient.send). */
+interface SendOptions {
+    /**
+     * Let the browser finish the request even if the page is closed meanwhile (fetch keepalive). Browsers take at most
+     * 64 KiB of such request bodies at a time, so a larger body is sent as an ordinary request, and so is a retry after
+     * the browser refused one.
+     */
+    keepalive?: boolean;
+}
+
+/** The largest body sent with keepalive, under the browsers' 64 KiB limit (see SendOptions.keepalive). */
+const KEEPALIVE_MAX_BYTES = 60_000;
+
 interface RequestOptions {
     maxPageSize?: number;
     /** More Prefer header preferences, e.g. which annotations to include. */
@@ -148,16 +161,28 @@ export class DataverseClient {
         return all;
     }
 
-    public async send(method: "POST" | "DELETE" | "PATCH", path: string, body?: unknown, extraHeaders: Record<string, string> = {}): Promise<void> {
+    public async send(
+        method: "POST" | "DELETE" | "PATCH",
+        path: string,
+        body?: unknown,
+        extraHeaders: Record<string, string> = {},
+        options: SendOptions = {},
+    ): Promise<void> {
         const headers = { ...this.baseHeaders(), ...extraHeaders };
         if (body !== undefined) {
             headers["Content-Type"] = "application/json; charset=utf-8";
         }
-        await this.request(this.resolve(path), { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+        const json = body === undefined ? undefined : JSON.stringify(body);
+        const init: RequestInit = { method, headers, body: json };
+        if (options.keepalive && json !== undefined && new TextEncoder().encode(json).length <= KEEPALIVE_MAX_BYTES) {
+            init.keepalive = true;
+        }
+        await this.request(this.resolve(path), init);
     }
 
     /** One logical request: waits out any throttling pause, then tries up to MAX_RETRIES + 1 times. */
-    private async request(url: string, init: RequestInit, signal?: AbortSignal): Promise<Reply> {
+    private async request(url: string, request: RequestInit, signal?: AbortSignal): Promise<Reply> {
+        let init = request;
         const isRead = (init.method ?? "GET") === "GET";
         let timeouts = 0;
         for (let attempt = 0; ; attempt++) {
@@ -189,6 +214,9 @@ export class DataverseClient {
                 retryable = isRead && timeouts === 1;
             } else if (failure) {
                 retryable = isNetworkError(failure);
+                // A browser also refuses a keepalive request on the spot, like a dropped connection, when the bodies of
+                // all keepalive requests on their way from the page would pass 64 KiB: resend it as an ordinary one.
+                if (retryable && init.keepalive) init = { ...init, keepalive: false };
             } else {
                 retryable = isRetryableStatus(reply!.status);
             }

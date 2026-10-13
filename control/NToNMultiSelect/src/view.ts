@@ -22,6 +22,11 @@ export interface ViewState {
     canSelectAll: boolean;
     /** The "Maximum selections" setting is reached: unselected rows can't be picked until something is removed. */
     maxReached: boolean;
+    /**
+     * Records that take a place toward the limit without being selected (a removal on its way, an add whose outcome
+     * isn't known yet): picking one of them again takes no new place, so it isn't blocked at the limit.
+     */
+    held?: ReadonlySet<string>;
     /** Short hint shown at the top of the list (used for the selection limit), or null. */
     note: string | null;
     /** False until metadata and the saved values are loaded (the field shows blank instead of a misleading "---"). */
@@ -82,6 +87,7 @@ const MAX_SPOKEN_NAMES = 10;
 interface DrawnRows {
     selected: ReadonlySet<string>;
     pending: ReadonlySet<string>;
+    held: ReadonlySet<string>;
     visited: ReadonlySet<string>;
     maxReached: boolean;
     /** Row with the keyboard highlight: an index into state.options, or null. */
@@ -138,6 +144,8 @@ export class MultiSelectView {
      * stays on its record when the selection changes around it.
      */
     private chipCurrent: string | null = null;
+    /** Quick create is open for "+ New": the field keeps its focused look while it is (see startCreate). */
+    private creating = false;
     private searchTerm = "";
     private destroyed = false;
     private lastStatus = "";
@@ -205,6 +213,8 @@ export class MultiSelectView {
         const chipsRow = el("div", "ntnms-chips-row");
         this.chipsList = el("ul", "ntnms-chips");
         this.chipsList.setAttribute("role", "list");
+        // Takes the focus after a value is removed with its x (see removeWithX), never with Tab.
+        this.chipsList.tabIndex = -1;
         this.moreWrap = el("div", "ntnms-more is-hidden");
         this.moreButton = el("button", "ntnms-more-button");
         this.moreButton.type = "button";
@@ -417,8 +427,10 @@ export class MultiSelectView {
     private renderChips(state: ViewState): void {
         const doc = this.container.ownerDocument;
         this.chipsList.textContent = "";
-        // A record can have hundreds of links; only build what can be seen unless the user expanded the field.
-        const shown = this.expanded || this.chipCurrent !== null ? state.selected : state.selected.slice(0, MAX_COLLAPSED_CHIPS);
+        // A record can have hundreds of links; only build what can be seen unless the user expanded the field, or the
+        // keyboard highlight is on a chip past the first ones.
+        const currentIndex = this.chipCurrent === null ? -1 : state.selected.findIndex((i) => i.id === this.chipCurrent);
+        const shown = this.expanded || currentIndex >= MAX_COLLAPSED_CHIPS ? state.selected : state.selected.slice(0, MAX_COLLAPSED_CHIPS);
         // The keyboard highlight stays on its record; once that record is no longer selected, the chip navigation ends.
         if (this.chipCurrent !== null && !state.selected.some((i) => i.id === this.chipCurrent)) this.chipCurrent = null;
         shown.forEach((item) => {
@@ -462,7 +474,7 @@ export class MultiSelectView {
                         this.tapped = null;
                         return;
                     }
-                    this.toggle(item, false);
+                    this.removeWithX(item);
                 });
                 chip.appendChild(remove);
             }
@@ -633,6 +645,7 @@ export class MultiSelectView {
             const changed = new Set<string>();
             addDifference(changed, drawn.selected, this.selectedIds);
             addDifference(changed, drawn.pending, state.pending);
+            addDifference(changed, drawn.held, state.held ?? NONE);
             addDifference(changed, drawn.visited, this.visitedRows);
             if (drawn.current !== current) {
                 for (const index of [drawn.current, current]) {
@@ -645,7 +658,7 @@ export class MultiSelectView {
                 if (row) this.drawRow(state, row, id, Number(row.dataset.index));
             }
         }
-        this.drawnRows = { selected: this.selectedIds, pending: state.pending, visited: this.visitedRows, maxReached: state.maxReached, current };
+        this.drawnRows = { selected: this.selectedIds, pending: state.pending, held: state.held ?? NONE, visited: this.visitedRows, maxReached: state.maxReached, current };
         this.updateActiveDescendant();
     }
 
@@ -655,7 +668,8 @@ export class MultiSelectView {
      */
     private drawRow(state: ViewState, row: HTMLLIElement, id: string, index: number): void {
         const selected = this.isSelected(id);
-        const blocked = state.maxReached && !selected;
+        // A record being removed (saving, not selected) keeps its place toward the limit, so picking it again is allowed.
+        const blocked = state.maxReached && !selected && !holdsPlace(state, id);
         row.classList.toggle("is-selected", selected);
         row.classList.toggle("is-visited", selected && this.visitedRows.has(id));
         row.classList.toggle("is-saving", state.pending.has(id));
@@ -830,7 +844,7 @@ export class MultiSelectView {
             }
             const button = target.closest(".ntnms-chip-remove, .ntnms-more-button");
             if (button && this.chipsShownAtPress) {
-                e.preventDefault(); // keep focus in the search box
+                e.preventDefault(); // the focus moves on the click (see removeWithX), or stays where it is (+N)
                 return;
             }
             const link = target.closest(".ntnms-chip-link");
@@ -876,7 +890,26 @@ export class MultiSelectView {
             this.applyClasses();
             this.scheduleMeasure();
         });
+        // The chips have the focus after a value is removed with its x or +N (see removeWithX): the box looks focused.
+        this.chipsList.addEventListener("focus", () => {
+            this.openedRecord = false;
+            if (!this.editable()) return;
+            this.focused = true;
+            this.applyClasses();
+            this.scheduleMeasure();
+        });
+        // Their highlight belongs to that focus: when it moves on (into the search box, say), it ends.
+        this.chipsList.addEventListener("blur", (e) => {
+            if (this.chipCurrent === null) return;
+            // The window lost the focus (to the new tab of a record Enter opened, say): the focusout handler decides.
+            if (!e.relatedTarget && !this.container.ownerDocument.hasFocus()) return;
+            this.chipCurrent = null;
+            this.clearChipHighlight();
+        });
+        this.chipsList.addEventListener("keydown", (e) => this.onChipsListKey(e));
         this.root.addEventListener("focusout", (e) => {
+            // Quick create of "+ New" has the focus: the field stays as it is until it closes (see startCreate).
+            if (this.creating) return;
             const next = e.relatedTarget as Node | null;
             if (next && (this.root.contains(next) || this.menu.contains(next))) return;
             if (!next && this.openedRecord && this.chipCurrent !== null && !this.container.ownerDocument.hasFocus()) {
@@ -927,16 +960,26 @@ export class MultiSelectView {
             this.expanded = !this.expanded;
             // Collapsed, the list still keeps its scroll position (it only hides what overflows): back to the first line.
             if (!this.expanded) this.chipsList.scrollTop = 0;
+            // As in the native control, +N and less put the focus on the values, the first one highlighted (an open list
+            // closes): the field stays open until the focus leaves it, not only while the mouse is over it.
+            const s = this.state;
+            const focusValues = !!s && s.selected.length > 0 && this.editable();
+            const highlight = focusValues && this.chipCurrent === null ? s.selected[0] : null;
+            if (focusValues) this.closeMenu();
+            if (highlight) this.chipCurrent = highlight.id;
             this.applyClasses();
-            if (this.state) this.renderChips(this.state);
+            if (s) this.renderChips(s);
             this.scheduleMeasure();
+            if (focusValues && this.container.ownerDocument.activeElement !== this.chipsList) this.chipsList.focus();
+            if (highlight) this.announce(highlight.name);
+            // A highlight kept from before (on a lower line, say) comes into view with the rest.
+            else if (s && this.expanded && this.chipCurrent !== null) this.scrollChipIntoView(s.selected.findIndex((i) => i.id === this.chipCurrent));
         });
         this.menu.addEventListener("mousedown", (e) => e.preventDefault());
         this.selectAllRow.addEventListener("click", () => this.toggleAll());
         this.createButton.addEventListener("click", () => {
             if (!this.editable()) return;
-            this.closeMenu();
-            this.callbacks.onCreate();
+            this.startCreate();
         });
         this.list.addEventListener("click", (e) => {
             const row = (e.target as HTMLElement).closest("li.ntnms-option") as HTMLLIElement | null;
@@ -977,6 +1020,9 @@ export class MultiSelectView {
         // The optional "+ New" button is the last keyboard stop (index === count).
         const lastIndex = s.createLabel ? count : count - 1;
         const empty = lastIndex < 0;
+
+        // Keys pressed before quick create of "+ New" has taken the focus are not for the list (see startCreate).
+        if (this.creating) return;
 
         if (this.chipCurrent !== null) {
             this.onChipKey(e);
@@ -1055,7 +1101,8 @@ export class MultiSelectView {
                 return;
             }
             case "Backspace": {
-                if (this.input.value === "" && s.selected.length > 0) {
+                // With the list open, Backspace leaves the values alone, as in the native control.
+                if (this.input.value === "" && s.selected.length > 0 && !this.open) {
                     e.preventDefault();
                     // Backspace held down to clear the search text stops there: only a new press goes on to the chips.
                     if (e.repeat) return;
@@ -1165,11 +1212,87 @@ export class MultiSelectView {
         }
         const item = s.selected[index];
         this.chipCurrent = item.id;
+        if (index >= this.chipsList.children.length) {
+            // Past the chips a collapsed field built (after an x, see removeWithX): build them all, once.
+            this.expanded = true;
+            this.renderChips(s);
+            this.applyClasses();
+            this.scheduleMeasure();
+        }
         // Every chip is built while the keyboard is on them (a Delete was already redrawn by the controller's
         // render), so only the highlight moves: rebuilding thousands of chips per key press would make this sluggish.
         this.highlightChip(index);
         this.scrollChipIntoView(index);
         this.announce(item.name);
+    }
+
+    /**
+     * A value removed with its x, as the native control does it: the box takes its focused look (the search row shows,
+     * an open list closes), and the focus goes to the chips rather than the search box, with the next value
+     * highlighted, or the one before when the last was removed. With nothing left, the search box takes the focus.
+     */
+    private removeWithX(item: Item): void {
+        const index = this.state?.selected.findIndex((i) => i.id === item.id) ?? -1;
+        this.closeMenu();
+        this.toggle(item, false);
+        // The controller re-rendered synchronously: continue from the new selection.
+        const s = this.state;
+        if (!s || !this.editable()) return;
+        const next = Math.min(Math.max(index, 0), s.selected.length - 1);
+        if (next < 0 || s.selected[next].id === item.id) {
+            this.focusInput();
+            return;
+        }
+        this.chipCurrent = s.selected[next].id;
+        // The next value moved into the x's place, so it is among the chips built: the field stays as it is.
+        this.renderChips(s);
+        this.applyClasses();
+        this.scheduleMeasure();
+        if (this.container.ownerDocument.activeElement !== this.chipsList) this.chipsList.focus();
+        this.scrollChipIntoView(next);
+        this.announce(s.selected[next].name);
+    }
+
+    /**
+     * Keys while the chips have the focus (after an x or +N, see removeWithX). As in the native control, the arrow keys
+     * move the highlight, the last value keeping it, Backspace and Delete remove the highlighted value, Escape collapses
+     * the expanded values (as less does), and typing does nothing; Enter opens the record ("Open selected records").
+     * Tab goes on to the search box. Once the highlight ends (Down, the last value removed), the search box takes the
+     * focus.
+     */
+    private onChipsListKey(e: KeyboardEvent): void {
+        if (e.target !== this.chipsList || !this.editable()) return;
+        if (e.key === "Tab") return;
+        if (this.chipCurrent === null) {
+            this.focusInput();
+            return;
+        }
+        if (e.key.length === 1) {
+            // Typing does nothing here, AltGr characters (Ctrl+Alt) included; shortcuts such as Ctrl+S go on to the page.
+            // Either way the highlight stays.
+            const shortcut = (e.ctrlKey || e.metaKey || e.altKey) && !(e.ctrlKey && e.altKey);
+            if (!shortcut) e.preventDefault();
+            return;
+        }
+        if (e.key === "Escape") {
+            if (!this.expanded) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this.expanded = false;
+            this.chipsList.scrollTop = 0;
+            this.applyClasses();
+            if (this.state) this.renderChips(this.state);
+            this.scheduleMeasure();
+            return;
+        }
+        const s = this.state!;
+        const onward = this.rightToLeft() ? "ArrowLeft" : "ArrowRight";
+        if (e.key === onward && s.selected[s.selected.length - 1]?.id === this.chipCurrent) {
+            e.preventDefault();
+            return;
+        }
+        this.onChipKey(e);
+        if (this.chipCurrent === null) this.focusInput();
     }
 
     /** The expanded chip list scrolls; keep the chip the keyboard is on visible. */
@@ -1201,8 +1324,7 @@ export class MultiSelectView {
             return;
         }
         if (s.createLabel && this.current === s.options.length) {
-            this.closeMenu();
-            this.callbacks.onCreate();
+            this.startCreate();
             return;
         }
         const item = s.options[this.current];
@@ -1211,7 +1333,7 @@ export class MultiSelectView {
 
     private toggle(item: Item, select: boolean): void {
         if (!this.editable()) return;
-        if (select && this.state?.maxReached) {
+        if (select && this.state?.maxReached && !holdsPlace(this.state, item.id)) {
             if (this.state.note) this.announce(this.state.note);
             return;
         }
@@ -1291,13 +1413,16 @@ export class MultiSelectView {
     }
 
     private openMenu(): void {
-        if (this.open || !this.editable()) return;
+        // Not while quick create of "+ New" is starting or open (see startCreate).
+        if (this.open || this.creating || !this.editable()) return;
         this.open = true;
         this.current = null;
         this.callbacks.onOpen();
         // Catch up on what changed while the list was closed (nothing is left to do if onOpen's own render did).
         if (this.state) this.refreshRows(this.state);
         this.applyClasses();
+        // As in the native control, the list always opens at its beginning, wherever it was scrolled to before.
+        this.list.scrollTop = 0;
         this.updateActiveDescendant();
         const doc = this.container.ownerDocument;
         // pointerdown as well: touch scrolling and some taps never produce a mousedown.
@@ -1385,6 +1510,28 @@ export class MultiSelectView {
         }, 30);
     }
 
+    /**
+     * "+ New": the record is made in quick create. The list closes, but the field keeps its focused look (the values
+     * and the search row) while quick create has the focus; once it has closed (see createDone), the search box takes
+     * the focus back, with the new value among the others. Until then the list stays closed, also in the moment before
+     * quick create has taken the focus, so a second Enter, typing or the chevron can't bring it back over quick create.
+     */
+    private startCreate(): void {
+        if (this.creating) return;
+        this.creating = true;
+        this.closeMenu();
+        this.callbacks.onCreate();
+    }
+
+    /** Quick create has closed, saved or not (see startCreate). */
+    public createDone(): void {
+        if (!this.creating || this.destroyed) return;
+        this.creating = false;
+        // Text typed before quick create took the focus didn't search: it goes.
+        if (this.input.value) this.clearSearch();
+        if (this.focused) this.focusInput();
+    }
+
     /** The control's root element (used by the form bridge to detect quick create panes and dialogs). */
     public element(): HTMLElement {
         return this.root;
@@ -1405,6 +1552,13 @@ export class MultiSelectView {
 }
 
 /** Adds to `target` the ids that are in only one of the two sets. */
+const NONE: ReadonlySet<string> = new Set<string>();
+
+/** Whether a record that isn't selected still takes a place toward the limit (see ViewState.held), or is being removed. */
+function holdsPlace(state: ViewState, id: string): boolean {
+    return state.pending.has(id) || !!state.held?.has(id);
+}
+
 function addDifference(target: Set<string>, a: ReadonlySet<string>, b: ReadonlySet<string>): void {
     if (a === b) return;
     for (const id of a) {

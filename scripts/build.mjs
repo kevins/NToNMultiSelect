@@ -1,4 +1,5 @@
-// Builds the control and both solution packages.
+// Builds the control and the two packages of the solution without the plug-in (see build-with-plugin.mjs for the
+// solution with it).
 //
 //   node scripts/build.mjs
 //

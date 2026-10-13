@@ -3,7 +3,7 @@ import { DataverseClient, DataverseError, TimeoutError, friendlyError, isNetwork
 import { FormBridge } from "./src/formBridge";
 import { resolveRelationship } from "./src/metadata";
 import { CopyWriter, NamesCopy, namesCopyFor } from "./src/namesCopy";
-import { CLIENT_MODE_LIMIT, OptionsQuery, RelatedData, SERVER_PAGE_SIZE, isSearchable } from "./src/relatedData";
+import { CLIENT_MODE_LIMIT, OptionsQuery, RelatedData, SERVER_PAGE_SIZE, isSearchable, linkTag } from "./src/relatedData";
 import { Strings, stringsFor } from "./src/strings";
 import { SyncEngine } from "./src/syncEngine";
 import { Item, OptionsMode, RelationshipInfo, isGuid, normalizeId } from "./src/types";
@@ -84,6 +84,8 @@ interface Detached {
     t: Strings;
     failures: number;
     firstError: string;
+    /** A write failed in a way that may still have saved it (see mayHaveSaved): the copy then reads the saved links. */
+    unknown: boolean;
     /**
      * "Copy names into the host column", or null when it's off. It was set up with the record's table, the host
      * column and its length while the control was still there.
@@ -131,10 +133,10 @@ function installUnloadGuard(): void {
     });
 }
 
-async function trackCopy(write: Promise<void>): Promise<void> {
+async function trackCopy<T>(request: Promise<T>): Promise<T> {
     copiesWriting++;
     try {
-        await write;
+        return await request;
     } finally {
         copiesWriting--;
     }
@@ -179,6 +181,14 @@ function searchKey(text: string): string {
 /** Errors after which the rest of a batch would only fail the same way: no permission, offline, busy, too slow. */
 function stopsBatch(error: unknown): boolean {
     return isPermissionError(error) || isNetworkError(error) || error instanceof TimeoutError || isServerBusy(error);
+}
+
+/**
+ * A write that failed this way may still have been saved: the connection dropped or the request timed out after it
+ * reached the server, or a gateway or server error answered. Only a read of the saved links tells.
+ */
+function mayHaveSaved(error: unknown): boolean {
+    return isNetworkError(error) || error instanceof TimeoutError || (error instanceof DataverseError && error.status >= 500);
 }
 
 /** Errors that can pass by themselves (offline, too slow, throttled, server trouble), unlike a wrong setting. */
@@ -250,6 +260,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     private error: string | null = null;
     private batchErrors = 0;
     private batchFirstError = "";
+    /** A write of the current batch failed in a way that may still have saved it (see mayHaveSaved). */
+    private batchUnknown = false;
     private fatalError: string | null = null;
     /** New record on a form whose save cannot be observed (e.g. quick create): selection must wait for a saved record. */
     private saveFirst = false;
@@ -281,6 +293,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     private renderedRecordId: string | null = null;
     private cachedSelected: Item[] = [];
     private cachedPending = new Set<string>();
+    /** The places taken toward Maximum selections (see SyncEngine.occupiedCount), kept with cachedSelected. */
+    private cachedOccupied = 0;
+    /** Records that take a place without being selected (see SyncEngine.placeHolders), kept with cachedSelected. */
+    private cachedHeld = new Set<string>();
 
     // "Open selected records".
     /** The page records open at, with the app id (see recordPageBase). Worked out once per initialise, when first needed. */
@@ -293,6 +309,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     private metadataRetried = false;
     private lastLoadError: unknown = null;
     private resyncTimer: ReturnType<typeof setTimeout> | undefined;
+    /** Re-reads tried again in a row because a place is held by an add whose outcome isn't known (see loadSelected). */
+    private resyncRetries = 0;
     private loadRetryTimer: ReturnType<typeof setTimeout> | undefined;
     private initRetryTimer: ReturnType<typeof setTimeout> | undefined;
     private subgridTimer: ReturnType<typeof setTimeout> | undefined;
@@ -519,6 +537,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         this.resyncWanted = false;
         this.error = null;
         this.batchErrors = 0;
+        this.batchUnknown = false;
+        this.resyncRetries = 0;
         this.loadedCopy = context.parameters.value?.raw || null;
         this.recordBase = null;
         clearTimeout(this.loadRetryTimer);
@@ -551,8 +571,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             const bridge = new FormBridge(entityName, rel.schemaName, config.subgrids, this.view.element(), rel.selfReferencing ? rel.navigationProperty : null, this.hiddenGrids);
             const engine: SyncEngine = new SyncEngine(
                 {
-                    associate: (recordId, targetId) => data.associate(recordId, targetId),
-                    disassociate: (recordId, targetId) => data.disassociate(recordId, targetId),
+                    associate: (recordId, targetId) => data.associate(recordId, targetId, this.linkTag(rel, recordId)),
+                    disassociate: (recordId, targetId) => data.disassociate(recordId, targetId, this.linkTag(rel, recordId)),
                 },
                 {
                     onChange: () => {
@@ -654,7 +674,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
 
     /** Loads the list in the background so the first open is instant (not for read-only or offline controls). */
     private warmOptions(token: number): void {
-        if (this.saveFirst || this.offline || this.context.mode.isControlDisabled) return;
+        if (this.saveFirst || this.offline || this.readOnly()) return;
         setTimeout(() => {
             if (token === this.initToken && !this.destroyed) void this.ensureOptions();
         }, 50);
@@ -705,8 +725,11 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 t: this.t,
                 failures: 0,
                 firstError: "",
+                // A write of the batch that failed but may have been saved: the copy reads the saved links at the end.
+                unknown: this.batchUnknown,
                 copy: this.config?.writeSummary ? (copy ?? this.startCopy(recordId, key, this.data)) : null,
             });
+            this.batchUnknown = false;
             return;
         }
         const entity = bridge.trackedEntity();
@@ -801,6 +824,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             }
             const before = engine.selected();
             engine.setConfirmed(items);
+            this.resyncRetries = 0;
+            // The message of an earlier read that failed is out of date now (another message stays).
+            if (this.error?.startsWith(this.t.loadSelectedFailed)) this.error = null;
             if (isResync && !sameIds(before, engine.selected())) {
                 this.updateSummary();
             }
@@ -811,6 +837,15 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             this.lastLoadError = error;
             this.error = `${this.t.loadSelectedFailed} ${friendlyError(error, this.t, "read")}`;
             console.error(`[${CONTROL_NAME}] loading related records failed`, error);
+            // A place held by an add whose outcome isn't known is only freed by a read of the saved links: while there
+            // is one, the read is tried again a few times (as the first load is).
+            if (isResync && engine === this.engine && engine.hasUncertain() && this.resyncRetries < LOAD_RETRY_DELAYS_MS.length) {
+                const delay = LOAD_RETRY_DELAYS_MS[this.resyncRetries++];
+                clearTimeout(this.resyncTimer);
+                this.resyncTimer = setTimeout(() => {
+                    if (!this.destroyed && token === this.initToken) void this.loadSelected(token, true);
+                }, delay);
+            }
             this.render();
             return false;
         }
@@ -891,12 +926,14 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 t: this.t,
                 failures: 0,
                 firstError: "",
+                unknown: false,
                 copy: this.config?.writeSummary ? this.startCopy(recordId, key, data) : null,
             });
         }
     }
 
-    private onWriteError(engine: SyncEngine, item: Item, operation: "add" | "remove", error: unknown): void {
+    /** Reports a failed write; returns whether it may have been saved all the same (see mayHaveSaved). */
+    private onWriteError(engine: SyncEngine, item: Item, operation: "add" | "remove", error: unknown): boolean {
         console.error(`[${CONTROL_NAME}] ${operation} failed for ${item.id}`, error);
         const reason = friendlyError(error, this.t, "change");
         // Every queued change would fail the same way (no permission, offline, server busy): drop them now and count
@@ -907,9 +944,11 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             if (away) {
                 away.failures += 1 + dropped;
                 if (!away.firstError) away.firstError = reason;
+                if (mayHaveSaved(error)) away.unknown = true;
             }
-            return;
+            return mayHaveSaved(error);
         }
+        if (mayHaveSaved(error)) this.batchUnknown = true;
         this.batchErrors += 1 + dropped;
         if (this.batchErrors === 1) {
             this.batchFirstError = reason;
@@ -919,6 +958,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             this.error = `${this.t.manyFailed(this.batchErrors)} ${this.batchFirstError}`;
         }
         this.render();
+        return mayHaveSaved(error);
     }
 
     private onSettled(engine: SyncEngine, changed: boolean): void {
@@ -928,10 +968,20 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             return;
         }
         const hadErrors = this.batchErrors > 0;
+        const unknown = this.batchUnknown;
         this.batchErrors = 0;
-        if (changed) {
+        this.batchUnknown = false;
+        if (unknown) {
+            // A write may have been saved although it failed: the copy follows the links saved on the server, and the
+            // re-read that settles it gets its own retries (see loadSelected).
+            this.resyncRetries = 0;
+            this.updateSummary(true);
+        }
+        // A write that may have been saved changes the links as much as one that was: subgrids and the other instances
+        // on the page read them again.
+        if (changed || unknown) {
             this.scheduleSubgridRefresh();
-            this.updateSummary();
+            if (!unknown) this.updateSummary();
             const recordId = engine.getRecordId();
             if (recordId) this.resyncPeers(this.recordKey(recordId), engine);
         }
@@ -943,7 +993,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     }
 
     private finishDetached(engine: SyncEngine, away: Detached, changed: boolean): void {
-        if (changed) {
+        if (changed || away.unknown) {
             away.bridge.refreshSubgrids(engine.getRecordId());
             this.resyncPeers(away.key, engine);
         }
@@ -953,8 +1003,11 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         }
         // Every link is saved (or has failed for good), so the copy can follow them, unless none of them changed
         // anything. Changes that were saved before the engine was detached have been copied already (updateSummary).
-        if (changed && away.copy) {
-            away.copy.names.update(engine.selected(), away.copy.writer);
+        // A write that failed may still have been saved (see mayHaveSaved): then the copy reads the saved links and
+        // writes their names, whatever the page shows.
+        if (away.copy) {
+            if (away.unknown) away.copy.names.refresh(away.copy.writer);
+            else if (changed) away.copy.names.update(engine.selected(), away.copy.writer);
         }
         detached.delete(engine);
         liveEngines.delete(engine);
@@ -1006,14 +1059,27 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
      * with an update of its own. The form is never made dirty, and a new record gets nothing before its first save
      * (its links are written first, then the copy).
      */
-    private updateSummary(): void {
+    private updateSummary(force = false): void {
         const engine = this.engine;
         const recordId = engine?.getRecordId();
-        if (this.destroyed || !this.config?.writeSummary || !engine || !recordId) return;
+        // With the host column locked by column security, the write would be refused: a change made in a subgrid of the
+        // form is left to the names copy plug-in, when it is installed.
+        if (this.destroyed || !this.config?.writeSummary || !engine || !recordId || this.columnLocked()) return;
         this.copy ??= this.startCopy(recordId, this.recordKey(recordId), this.data);
         if (this.copy) {
-            this.copy.names.update(engine.selected(), this.copy.writer);
+            // `force`: read the saved links and write their names even when the page's names haven't changed.
+            if (force) this.copy.names.refresh(this.copy.writer);
+            else this.copy.names.update(engine.selected(), this.copy.writer);
         }
+    }
+
+    /**
+     * The tag of this control's link requests for `recordId` while it writes the host column copy itself (see
+     * linkTag), or undefined when it doesn't: the names copy plug-in then copies its links like any others.
+     */
+    private linkTag(rel: RelationshipInfo, recordId: string): string | undefined {
+        const host = (this.context.parameters.value as unknown as { attributes?: { LogicalName?: string } }).attributes?.LogicalName;
+        return this.config?.writeSummary && host ? linkTag(rel, recordId, host) : undefined;
     }
 
     /**
@@ -1036,19 +1102,41 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             writer: {
                 maxLength: attributes.MaxLength,
                 write: (value) => trackCopy(data.updateRecord(recordId, host, value)),
-                onError: (error) => this.onCopyFailed(copy, error, label, t),
+                onError: (error, step) => this.onCopyFailed(copy, error, label, t, step),
+                readSaved: async () => {
+                    const engine = this.engine;
+                    const version = engine?.version;
+                    const items = await trackCopy(data.loadSelected(recordId));
+                    this.showSaved(engine, version, recordId, items);
+                    return items;
+                },
             },
         };
         return copy;
     }
 
     /**
+     * Shows the links the names copy has just read from the server before writing their names (see CopyWriter.readSaved):
+     * links made or removed elsewhere since the field read them (in another tab, by another user, from the other side
+     * of the relationship, by a flow) then appear with the user's next change, without a reload. Only while this
+     * instance still shows that record and nothing has changed in it since the read began.
+     */
+    private showSaved(engine: SyncEngine | null, version: number | undefined, recordId: string, items: Item[]): void {
+        if (this.destroyed || !engine || engine !== this.engine || engine.getRecordId() !== recordId) return;
+        if (engine.version !== version || engine.isBusy() || engine.hasPendingChanges()) return;
+        const before = engine.selected();
+        engine.setConfirmed(items);
+        this.resyncRetries = 0;
+        if (!sameIds(before, engine.selected())) this.render();
+    }
+
+    /**
      * A failed copy leaves the links as they are. It is explained under the field or, once the control has moved on
      * (the record was closed, or the control shows another one), in an app notification.
      */
-    private onCopyFailed(copy: HostCopy, error: unknown, label: string, t: Strings): void {
+    private onCopyFailed(copy: HostCopy, error: unknown, label: string, t: Strings, step: "read" | "write"): void {
         console.error(`[${CONTROL_NAME}] copying the names into the host column failed`, error);
-        const message = t.copyFailed(label, friendlyError(error, t, "update"));
+        const message = t.copyFailed(label, friendlyError(error, t, step === "read" ? "read" : "update"));
         if (copy === this.copy && !this.destroyed) {
             this.error = message;
             this.render();
@@ -1119,8 +1207,21 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         }
     }
 
+    /**
+     * The form or the field is read-only, or column security doesn't let the user update the host column the control is
+     * bound to: then the control is read-only too, as a native field on that column would be.
+     */
+    private readOnly(): boolean {
+        return this.context.mode.isControlDisabled || this.columnLocked();
+    }
+
+    /** Column security doesn't let the user update the host column (when it isn't secured, the form doesn't say). */
+    private columnLocked(): boolean {
+        return this.context.parameters.value?.security?.editable === false;
+    }
+
     private canEdit(): boolean {
-        return !!this.engine && this.selectedLoaded && !this.context.mode.isControlDisabled && !this.saveFirst && !this.offline;
+        return !!this.engine && this.selectedLoaded && !this.readOnly() && !this.saveFirst && !this.offline;
     }
 
     private onToggle(items: Item[], select: boolean): void {
@@ -1128,8 +1229,11 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         if (!engine || !this.canEdit()) return;
         const max = this.config?.maxSelections ?? 0;
         if (select && max > 0) {
-            const adding = items.filter((i) => !engine.isSelected(i.id)).length;
-            if (engine.selectedCount() + adding > max) {
+            // A record whose removal is still on its way keeps its place, since the removal may fail and bring it
+            // back: the limit counts it until the removal succeeded, and picking it again takes no new place.
+            const adding = items.filter((i) => !engine.occupies(i.id)).length;
+            // A pick that takes no new place is never refused (the record may hold more links than the limit already).
+            if (adding > 0 && engine.occupiedCount() + adding > max) {
                 // The view already blocks this; the check here also covers + New and anything else that selects.
                 this.error = this.t.maxNote(max);
                 this.render();
@@ -1149,7 +1253,13 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         let item: Item;
         try {
             const navigation = this.context.navigation as unknown as { openForm(options: object): Promise<OpenFormResult> };
-            const result = await navigation.openForm({ entityName: rel.targetEntity, useQuickCreateForm: true });
+            let result: OpenFormResult | undefined;
+            try {
+                result = await navigation.openForm({ entityName: rel.targetEntity, useQuickCreateForm: true });
+            } finally {
+                // Quick create has closed: the field it left focused takes the focus back (see MultiSelectView.startCreate).
+                if (!this.destroyed) this.view.createDone();
+            }
             const saved = result?.savedEntityReference?.[0];
             if (!saved || this.destroyed) return;
             item = { id: normalizeId(saved.id), name: saved.name || this.t.noName };
@@ -1303,15 +1413,29 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         if (!isSearchable(trimmed)) {
             // Only hyphens or apostrophes: nothing to search for, and the query would scan the whole table.
             this.searchToken++;
+            this.loadingMore = false;
+            this.loadMoreError = null;
             this.shownOptions = [];
             this.shownNext = null;
             this.optionsStatus = "ready";
             this.render();
             return;
         }
-        const run = (): void => void this.serverSearch(trimmed);
-        if (immediate) run();
-        else this.searchTimer = setTimeout(run, SEARCH_DEBOUNCE_MS);
+        if (immediate) {
+            void this.serverSearch(trimmed);
+            return;
+        }
+        // The rows on screen belong to the previous search. They go now rather than when the request starts, so that in
+        // the meantime nothing of that search can act: a page of it still on its way is dropped, and a click, Enter or
+        // Select all can't link its records under the new search text.
+        this.searchToken++;
+        this.loadingMore = false;
+        this.loadMoreError = null;
+        this.optionsStatus = "loading";
+        this.shownOptions = [];
+        this.shownNext = null;
+        this.render();
+        this.searchTimer = setTimeout(() => void this.serverSearch(trimmed), SEARCH_DEBOUNCE_MS);
     }
 
     private async serverSearch(term: string): Promise<void> {
@@ -1386,17 +1510,22 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 this.cachedSelected = engine.selected();
                 // Show the "saving" look only for real writes, not for values waiting for a new record's first save.
                 this.cachedPending = recordId ? engine.pendingIds() : new Set<string>();
+                this.cachedHeld = engine.placeHolders();
+                this.cachedOccupied = this.cachedSelected.length + this.cachedHeld.size;
             }
-        } else if (this.cachedSelected.length || this.cachedPending.size) {
+        } else if (this.cachedSelected.length || this.cachedPending.size || this.cachedOccupied) {
             this.cachedSelected = [];
             this.cachedPending = new Set<string>();
+            this.cachedHeld = new Set<string>();
+            this.cachedOccupied = 0;
             this.renderedVersion = -1;
         }
         const t = this.t;
         const mode = this.context.mode;
         const config = this.config;
         const max = config?.maxSelections ?? 0;
-        const maxReached = max > 0 && this.cachedSelected.length >= max;
+        // Records whose removal is still on its way count until it succeeded (see SyncEngine.occupiedCount).
+        const maxReached = max > 0 && this.cachedOccupied >= max;
 
         // Select all only appears when every matching row is loaded, the setting allows it, the list is within the
         // limit (0 = as many as one load holds, 500) and selecting them all stays within Maximum selections.
@@ -1404,8 +1533,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         const limit = config && config.selectAllLimit > 0 ? config.selectAllLimit : CLIENT_MODE_LIMIT;
         let canSelectAll = allLoaded && !!config?.showSelectAll && this.shownOptions.length > 0 && this.shownOptions.length <= limit;
         if (canSelectAll && max > 0 && engine) {
-            const extra = this.shownOptions.filter((i) => !engine.isSelected(i.id)).length;
-            canSelectAll = engine.selectedCount() + extra <= max;
+            const extra = this.shownOptions.filter((i) => !engine.occupies(i.id)).length;
+            canSelectAll = this.cachedOccupied + extra <= max;
         }
         const note = max > 0 ? (maxReached ? t.maxReached(max) : t.maxNote(max)) : null;
 
@@ -1420,6 +1549,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         this.view.render({
             selected: this.cachedSelected,
             pending: this.cachedPending,
+            held: this.cachedHeld,
             options: this.shownOptions,
             optionsStatus: this.optionsStatus,
             optionsError: this.optionsError,
@@ -1430,7 +1560,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             maxReached,
             note,
             ready: !!engine && this.selectedLoaded,
-            disabled: mode.isControlDisabled || this.saveFirst || this.offline,
+            disabled: this.readOnly() || this.saveFirst || this.offline,
             label: mode.label || t.relatedRecords,
             placeholder: config?.placeholder ?? t.placeholder,
             error: this.error,
