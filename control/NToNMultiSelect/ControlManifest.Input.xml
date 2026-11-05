@@ -3,14 +3,15 @@
   N:N Multi-Select (KV.NToNMultiSelect)
 
   A field control that edits a many-to-many relationship and looks like the native multi-select choice field.
-  It is placed on any text column ("Host column"); that column is only an anchor and the form never gets a value for
-  it from the control. "Copy names into the host column" writes the names to the record itself instead.
+  It is placed on any text column ("Host column"). The control fills that column on the form with the selected names,
+  marked never to be saved, so that a required column works; the form never gets a value to save from the control.
+  "Copy names into the host column" writes the names to the record itself instead.
 
   Note: the Dataverse import schema rejects apostrophes in display-name-key and description-key, so the texts
   below avoid them (scripts/build.mjs checks this before packaging).
 -->
 <manifest>
-  <control namespace="KV" constructor="NToNMultiSelect" version="1.0.0" display-name-key="N:N Multi-Select" description-key="Edits a many-to-many (N:N) relationship with a control that looks and behaves like the native multi-select choice field. Each selection is saved immediately, and related subgrids on the form refresh automatically." control-type="standard">
+  <control namespace="KV" constructor="NToNMultiSelect" version="1.0.1" display-name-key="N:N Multi-Select" description-key="Edits a many-to-many (N:N) relationship with a control that looks and behaves like the native multi-select choice field. Each selection is saved immediately, and related subgrids on the form refresh automatically." control-type="standard">
     <external-service-usage enabled="false">
     </external-service-usage>
 
@@ -20,7 +21,7 @@
       <type>Multiple</type>
     </type-group>
 
-    <property name="value" display-name-key="Host column" description-key="Any text column on the form that is not business required. The control uses it only as an anchor and never sets its value on the form, so a required column would block saving. To store the selected names in this column, turn on Copy names into the host column. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column." of-type-group="text" usage="bound" required="true" />
+    <property name="value" display-name-key="Host column" description-key="Any text column on the form. The control fills it on the form with the selected names, which the form never saves, so the column can be required (Business required, a business rule, or a required step of a business process flow): saving, or moving to the next stage, is then blocked until something is selected. Other copies of the column on the form become read-only. To store the selected names in this column, turn on Copy names into the host column. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column." of-type-group="text" usage="bound" required="true" />
 
     <property name="relationshipName" display-name-key="N:N relationship schema name" description-key="Schema name of the many-to-many relationship to edit, for example new_project_skill. The name is not case-sensitive. The related table, its columns and the navigation properties are looked up automatically." of-type="SingleLine.Text" usage="input" required="true" />
 
@@ -53,9 +54,14 @@
 
     <property name="placeholder" display-name-key="Placeholder (optional)" description-key="Text shown in the empty search box. Default: Select or search options." of-type="SingleLine.Text" usage="input" required="false" />
 
-    <property name="writeSummary" display-name-key="Copy names into the host column" description-key="No (default): the host column is never changed. Yes: after each change is saved, the selected names (for example API design; Automation) are written to the host column of the record in a separate update, so they can be shown in views, searched and exported. The text is cut to the maximum length of the host column, so give the column enough room, for example 4000 characters. A record is updated only when its selection changes, so records linked before this setting was turned on need a one-time update. The form is not made dirty, plug-ins, flows and auditing see the update, and users need Write permission on the record. Only changes made with this control or with subgrids on the same form are copied, and only records the user can see are included. Anyone who can read the record can read the copied names, including users who cannot see the related records themselves: when the related table holds restricted records, leave this off or secure the host column with column security (users who are not allowed to update the column then see the control read-only). With the names copy plug-in solution installed, changes made elsewhere (imports, flows, integrations or the other side of the relationship) are copied too, with every linked name." of-type="Enum" usage="input" required="false" default-value="0">
+    <property name="writeSummary" display-name-key="Copy names into the host column" description-key="No (default): nothing is written to the host column. Yes: after each change is saved, the selected names (for example API design; Automation) are written to the host column of the record in a separate update, so they can be shown in views, searched and exported. The text is cut to the maximum length of the host column, so give the column enough room, for example 4000 characters. A record is updated only when its selection changes, so records linked before this setting was turned on need a one-time update. The form is not made dirty, plug-ins, flows and auditing see the update, and users need Write permission on the record. Only changes made with this control or with subgrids on the same form are copied, and only records the user can see are included. Anyone who can read the record can read the copied names, including users who cannot see the related records themselves: when the related table holds restricted records, leave this off or secure the host column with column security (users who are not allowed to update the column then see the control read-only). With the names copy plug-in solution installed, changes made elsewhere (imports, flows, integrations or the other side of the relationship) are copied too, with every linked name." of-type="Enum" usage="input" required="false" default-value="0">
       <value name="No" display-name-key="No">0</value>
       <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <property name="formSelection" display-name-key="Selection on the form" description-key="What the form is told about the selection, through the host column. No (default): the host column on the form shows the names of the saved selected values (on a new record, the picks waiting for the first save), for scripts and the required check; the form never saves them and no event runs. Event: the same, and the OnChange event of the host column runs after each change of the selection once it is saved (a removal once it has gone through, the removal of the last value of a required field at once; on a new record, at each change before the first save), so that scripts and business rules on the column can react. The names shown when the form opens never count as a change." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Event" display-name-key="Event">1</value>
     </property>
 
 

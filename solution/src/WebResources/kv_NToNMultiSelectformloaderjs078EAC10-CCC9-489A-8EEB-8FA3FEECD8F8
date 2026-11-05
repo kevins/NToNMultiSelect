@@ -19,7 +19,7 @@
 
     var CONTROL = "KV.NToNMultiSelect";
     var BUNDLE = "cc_KV.NToNMultiSelect/bundle.js";
-    var VERSION = "1.0.0";
+    var VERSION = "1.0.1";
     var STATE_KEY = "__pcfLoader:" + CONTROL;
     var REMOUNTS_KEY = "__pcfRemounts:" + CONTROL;
 

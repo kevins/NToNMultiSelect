@@ -19,7 +19,7 @@ namespace NToNMultiSelect.NamesCopy
     /// deleted, the control works as without it. Register it on
     /// Associate and Disassociate, no primary table, PostOperation, synchronous. Those steps run for every link in the
     /// environment (1:N and system relationships too), so the relationship name is first looked up in the settings of
-    /// all active forms, read with one cached query: it returns at once unless a form has the control on this
+    /// all active forms, which are cached (see FromCache): it returns at once unless a form has the control on this
     /// relationship with "Copy names into the host column" set to Yes.
     /// Deleting a linked record removes its links without a Disassociate, and renaming one changes no link: two optional
     /// steps on Delete (PreValidation and PostOperation, see ExecuteDelete) and one on Update (PreOperation, see
@@ -33,15 +33,20 @@ namespace NToNMultiSelect.NamesCopy
     /// </summary>
     public sealed class NamesCopyPlugin : IPlugin
     {
-        /// <summary>How long form settings and metadata are kept. A form published meanwhile counts after this time.</summary>
+        /// <summary>
+        /// How often the cached form settings and table definitions are checked: a form published or a column changed
+        /// meanwhile counts after this time (see FromCache).
+        /// </summary>
         private static readonly TimeSpan CacheTime = TimeSpan.FromMinutes(2);
+
+        /// <summary>How long they are kept at most: they are read in full again after this time, whatever the checks found.</summary>
+        private static readonly TimeSpan MaxCacheTime = TimeSpan.FromMinutes(30);
 
         /// <summary>The time the caches go by: DateTime.UtcNow. Not read-only, so that it can be replaced.</summary>
         private static Func<DateTime> Clock = () => DateTime.UtcNow;
 
         /// <summary>The copy settings of the active forms of each organisation (see LoadForms).</summary>
-        private static readonly ConcurrentDictionary<Guid, Cached<IReadOnlyDictionary<string, Host[]>>> Forms =
-            new ConcurrentDictionary<Guid, Cached<IReadOnlyDictionary<string, Host[]>>>();
+        private static readonly ConcurrentDictionary<Guid, Cached<FormSettings>> Forms = new ConcurrentDictionary<Guid, Cached<FormSettings>>();
 
         /// <summary>The copy plans, by organisation, relationship, host table and host columns (see LoadPlan).</summary>
         private static readonly ConcurrentDictionary<string, Cached<CopyPlan>> Plans = new ConcurrentDictionary<string, Cached<CopyPlan>>();
@@ -88,7 +93,7 @@ namespace NToNMultiSelect.NamesCopy
             var service = SystemService(serviceProvider);
             var forms = ReadForms(context, service);
             // Links of every other relationship end here, without a service call once the forms are read.
-            if (!forms.TryGetValue(relationship.SchemaName.ToLowerInvariant(), out var hosts)) return;
+            if (!forms.Hosts.TryGetValue(relationship.SchemaName.ToLowerInvariant(), out var hosts)) return;
 
             var tracing = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
             var records = new[] { target }.Concat(related).ToList();
@@ -97,7 +102,7 @@ namespace NToNMultiSelect.NamesCopy
             {
                 // A self-referencing relationship has the table on both sides: both records are rebuilt.
                 // The records are rebuilt in one order in every execution: by table (the hosts are in that order, see
-                // LoadForms), then by id. Rebuild locks each record it updates until the link commits, so two requests
+                // FormSettings), then by id. Rebuild locks each record it updates until the link commits, so two requests
                 // that link several of the same records, in another order each, would otherwise each wait for a
                 // record the other one holds: a deadlock, and one of the links rolled back.
                 var ids = records.Where(r => r.LogicalName == host.Table).Select(r => r.Id).Distinct()
@@ -261,16 +266,23 @@ namespace NToNMultiSelect.NamesCopy
             return new Lazy<IOrganizationService>(() => factory.CreateOrganizationService(null));
         }
 
-        /// <summary>The copy settings of the active forms (see LoadForms), from the cache.</summary>
-        private static IReadOnlyDictionary<string, Host[]> ReadForms(IPluginExecutionContext context, Lazy<IOrganizationService> service)
+        /// <summary>
+        /// The copy settings of the active forms (see LoadForms), from the cache. They are checked with the forms'
+        /// version (see FormsVersion), and read again when it has changed.
+        /// </summary>
+        private static FormSettings ReadForms(IPluginExecutionContext context, Lazy<IOrganizationService> service)
         {
             try
             {
-                return FromCache(Forms, context.OrganizationId, () =>
-                {
-                    DropExpiredPlans();
-                    return LoadForms(service.Value);
-                });
+                return FromCache(Forms, context.OrganizationId,
+                    () =>
+                    {
+                        DropOldPlans();
+                        return LoadForms(service.Value);
+                    },
+                    // No form has changed: the same settings, in a new object all the same, so that the routes are
+                    // built again too (see ReadRoutes).
+                    known => FormsVersion(service.Value) == known.Version ? new FormSettings(known.Hosts, known.Version) : null);
             }
             catch (Exception error)
             {
@@ -528,9 +540,8 @@ namespace NToNMultiSelect.NamesCopy
 
         /// <summary>
         /// The copy plan of a host and relationship, from the cache, or null when it copies nothing. A setting that
-        /// can't work is kept for the cache time like a working plan, so that it costs no service call either; it is
-        /// traced once in each execution that meets it, and the link or delete is kept. A failed load is thrown with
-        /// a clear message.
+        /// can't work is cached like a working plan, so that it costs no service call either; it is traced once in
+        /// each execution that meets it, and the link or delete is kept. A failed load is thrown with a clear message.
         /// </summary>
         private static CopyPlan CopyPlanOf(IPluginExecutionContext context, Lazy<IOrganizationService> service, ITracingService tracing,
             string relationshipName, Host host)
@@ -540,7 +551,11 @@ namespace NToNMultiSelect.NamesCopy
             {
                 plan = FromCache(Plans,
                     $"{context.OrganizationId}|{relationshipName.ToLowerInvariant()}|{host.Table}|{string.Join(",", host.Columns)}",
-                    () => LoadPlan(service.Value, relationshipName, host.Table, host.Columns));
+                    () => LoadPlan(service.Value, relationshipName, host.Table, host.Columns),
+                    // A relationship can't change, only be deleted, and neither can whether Dataverse answers
+                    // RetrievePrincipalAccess for a table: only the definitions of the tables and columns are read
+                    // again. A setting that can't work for its relationship or tables stays as it is.
+                    known => known.OtherTable == null ? known : WithTables(service.Value, known, relationshipName, host.Columns, () => known.PrincipalAccess));
             }
             catch (Exception error)
             {
@@ -572,13 +587,13 @@ namespace NToNMultiSelect.NamesCopy
         /// <summary>The routes of one organisation and the forms they were built from (see ReadRoutes).</summary>
         private sealed class RouteTable
         {
-            public RouteTable(IReadOnlyDictionary<string, Host[]> forms, IReadOnlyDictionary<string, Route[]> byTable)
+            public RouteTable(FormSettings forms, IReadOnlyDictionary<string, Route[]> byTable)
             {
                 Forms = forms;
                 ByTable = byTable;
             }
 
-            public IReadOnlyDictionary<string, Host[]> Forms { get; }
+            public FormSettings Forms { get; }
             public IReadOnlyDictionary<string, Route[]> ByTable { get; }
         }
 
@@ -587,7 +602,8 @@ namespace NToNMultiSelect.NamesCopy
 
         /// <summary>
         /// The routes of the cached forms (see LoadRoutes), by the table whose names they copy. They are built again
-        /// whenever the forms are, so that a delete follows a form setting as soon as a link does.
+        /// whenever the forms are read again or checked (see ReadForms), so that a delete follows a form setting as
+        /// soon as a link does, and leaves out a relationship deleted meanwhile from the next check on.
         /// </summary>
         private static IReadOnlyDictionary<string, Route[]> ReadRoutes(IPluginExecutionContext context, Lazy<IOrganizationService> service)
         {
@@ -595,7 +611,7 @@ namespace NToNMultiSelect.NamesCopy
             if (Routes.TryGetValue(context.OrganizationId, out var known) && ReferenceEquals(known.Forms, forms)) return known.ByTable;
             try
             {
-                var routes = new RouteTable(forms, LoadRoutes(service.Value, forms));
+                var routes = new RouteTable(forms, LoadRoutes(service.Value, forms.Hosts));
                 Routes[context.OrganizationId] = routes;
                 return routes.ByTable;
             }
@@ -706,20 +722,74 @@ namespace NToNMultiSelect.NamesCopy
             public string[] Columns { get; }
         }
 
-        /// <summary>
-        /// The copy settings of all active forms of the organisation, by relationship schema name in lower case: the
-        /// tables and host columns to rebuild, in the ordinal order of the tables (see Execute). One query for every
-        /// table, so that a link of any other relationship costs a dictionary lookup. The dictionary is never changed
-        /// once built.
-        /// </summary>
-        private static IReadOnlyDictionary<string, Host[]> LoadForms(IOrganizationService service)
+        /// <summary>The copy settings of the active forms, and the forms' version they were read at (see FormsVersion).</summary>
+        private sealed class FormSettings
         {
-            // RetrieveMultiple returns the published form XML. The like filter leaves out the forms without the control;
-            // an inactive form (formactivationstate 0) isn't shown to anyone, so its settings don't count.
-            var query = new QueryExpression("systemform") { ColumnSet = new ColumnSet("objecttypecode", "formxml") };
-            query.Criteria.AddCondition("formxml", ConditionOperator.Like, "%" + NamesCopyHelpers.ControlName + "%");
+            public FormSettings(IReadOnlyDictionary<string, Host[]> hosts, long version)
+            {
+                Hosts = hosts;
+                Version = version;
+            }
+
+            /// <summary>
+            /// By relationship schema name in lower case: the tables and host columns to rebuild, in the ordinal order of
+            /// the tables (see Execute). Never changed once built.
+            /// </summary>
+            public IReadOnlyDictionary<string, Host[]> Hosts { get; }
+
+            public long Version { get; }
+        }
+
+        /// <summary>
+        /// The newest version of all forms, one row: every form created, published, activated or deactivated gets a
+        /// newer one. A deleted form doesn't change it (unless it was the newest), and counts at the next full load
+        /// (see MaxCacheTime).
+        /// </summary>
+        private static long FormsVersion(IOrganizationService service)
+        {
+            var query = new QueryExpression("systemform") { ColumnSet = new ColumnSet("versionnumber"), TopCount = 1 };
+            query.AddOrder("versionnumber", OrderType.Descending);
+            return service.RetrieveMultiple(query).Entities.FirstOrDefault()?.GetAttributeValue<long>("versionnumber") ?? 0;
+        }
+
+        /// <summary>
+        /// The copy settings of all active forms of the organisation (see FormSettings). One query for every table, so
+        /// that a link of any other relationship costs a dictionary lookup. The forms' version is read first, so that a
+        /// form published while they are read counts at the next check.
+        /// </summary>
+        private static FormSettings LoadForms(IOrganizationService service)
+        {
+            var version = FormsVersion(service);
+            // The forms that use a control of that name, found through the dependencies Dataverse keeps of each form on
+            // its controls rather than by searching the XML of every form, which can take most of a second in an
+            // environment with many forms. RetrieveMultiple returns the published form XML; an inactive form
+            // (formactivationstate 0) isn't shown to anyone, so its settings don't count.
+            // Page after page: Dataverse returns at most PageSize rows at a time. In the order of the forms' ids, so that
+            // each page starts after the last form of the one before.
+            var query = new QueryExpression("systemform")
+            {
+                ColumnSet = new ColumnSet("objecttypecode", "formxml"),
+                PageInfo = new PagingInfo { Count = PageSize, PageNumber = 1 },
+            };
+            query.AddOrder("formid", OrderType.Ascending);
             query.Criteria.AddCondition("formactivationstate", ConditionOperator.Equal, 1);
-            return service.RetrieveMultiple(query).Entities
+            // Component type 60: a form.
+            var dependency = query.AddLink("dependency", "formid", "dependentcomponentobjectid", JoinOperator.Inner);
+            dependency.LinkCriteria.AddCondition("dependentcomponenttype", ConditionOperator.Equal, 60);
+            var control = dependency.AddLink("customcontrol", "requiredcomponentobjectid", "customcontrolid", JoinOperator.Inner);
+            control.LinkCriteria.AddCondition("name", ConditionOperator.EndsWith, NamesCopyHelpers.ControlName);
+            var forms = new List<Entity>();
+            for (;;)
+            {
+                var page = service.RetrieveMultiple(query);
+                forms.AddRange(page.Entities);
+                if (!page.MoreRecords) break;
+                query.PageInfo.PageNumber++;
+                query.PageInfo.PagingCookie = page.PagingCookie;
+            }
+            var hosts = forms
+                // A form comes once for each dependency found: one on another control of that name too (ITAintBoring's).
+                .GroupBy(form => form.Id).Select(rows => rows.First())
                 .SelectMany(form => NamesCopyHelpers.ParseFormXml(form.GetAttributeValue<string>("formxml")).Select(setting => new
                 {
                     Relationship = setting.RelationshipName.ToLowerInvariant(),
@@ -734,6 +804,7 @@ namespace NToNMultiSelect.NamesCopy
                     .Select(byTable => new Host(byTable.Key,
                         byTable.Select(setting => setting.Column).Distinct().OrderBy(column => column, StringComparer.Ordinal).ToArray()))
                     .ToArray());
+            return new FormSettings(hosts, version);
         }
 
         /// <summary>A host column, its maximum length, and whether it has column security.</summary>
@@ -796,15 +867,33 @@ namespace NToNMultiSelect.NamesCopy
             {
                 return Skipped(table, $"{relationshipName} doesn't link {table}: nothing is copied into {into}.");
             }
-            var otherTable = first ? relationship.Entity2LogicalName : relationship.Entity1LogicalName;
-            var tables = TableMetadata(service, new[] { table, otherTable }.Distinct().ToArray(), columns);
-            if (!tables.TryGetValue(table, out var host) || !tables.TryGetValue(otherTable, out var other))
+            var links = new CopyPlan
+            {
+                Table = table,
+                Intersect = relationship.IntersectEntityName,
+                HostAttribute = first ? relationship.Entity1IntersectAttribute : relationship.Entity2IntersectAttribute,
+                OtherAttribute = first ? relationship.Entity2IntersectAttribute : relationship.Entity1IntersectAttribute,
+                OtherTable = first ? relationship.Entity2LogicalName : relationship.Entity1LogicalName,
+            };
+            return WithTables(service, links, relationshipName, columns, () => SupportsPrincipalAccess(service, table));
+        }
+
+        /// <summary>
+        /// The plan of `links` (the host table and what the relationship links) with what the definitions of its tables
+        /// and host columns say now, from one metadata query. `principalAccess` is asked last, once both tables are found.
+        /// </summary>
+        private static CopyPlan WithTables(IOrganizationService service, CopyPlan links, string relationshipName, string[] columns, Func<bool> principalAccess)
+        {
+            var table = links.Table;
+            var into = ColumnNames(table, columns);
+            var tables = TableMetadata(service, new[] { table, links.OtherTable }.Distinct().ToArray(), columns);
+            if (!tables.TryGetValue(table, out var host) || !tables.TryGetValue(links.OtherTable, out var other))
             {
                 return Skipped(table, $"The tables of {relationshipName} were not found: nothing is copied into {into}.");
             }
             if (other.PrimaryNameAttribute == null)
             {
-                return Skipped(table, $"{otherTable} has no primary name column: nothing is copied into {into}.");
+                return Skipped(table, $"{links.OtherTable} has no primary name column: nothing is copied into {into}.");
             }
 
             var copies = new List<HostColumn>();
@@ -828,14 +917,14 @@ namespace NToNMultiSelect.NamesCopy
                 Table = table,
                 TableId = host.PrimaryIdAttribute,
                 Ownership = host.OwnershipType,
-                PrincipalAccess = SupportsPrincipalAccess(service, table),
+                PrincipalAccess = principalAccess(),
                 WritePrivilege = host.Privileges?.FirstOrDefault(privilege => privilege.PrivilegeType == PrivilegeType.Write)?.Name,
                 Columns = copies.ToArray(),
                 Problems = problems.ToArray(),
-                Intersect = relationship.IntersectEntityName,
-                HostAttribute = first ? relationship.Entity1IntersectAttribute : relationship.Entity2IntersectAttribute,
-                OtherAttribute = first ? relationship.Entity2IntersectAttribute : relationship.Entity1IntersectAttribute,
-                OtherTable = otherTable,
+                Intersect = links.Intersect,
+                HostAttribute = links.HostAttribute,
+                OtherAttribute = links.OtherAttribute,
+                OtherTable = links.OtherTable,
                 OtherId = other.PrimaryIdAttribute,
                 OtherName = other.PrimaryNameAttribute,
             };
@@ -959,28 +1048,33 @@ namespace NToNMultiSelect.NamesCopy
             return update.Attributes.Count == 0 ? null : update;
         }
 
-        /// <summary>A cached value and when it expires. The value is never changed: a newer one replaces it whole.</summary>
+        /// <summary>
+        /// A cached value, when it was last loaded in full, and when it is next checked. The value is never changed: a
+        /// newer one replaces it whole.
+        /// </summary>
         private sealed class Cached<T>
         {
-            /// <summary>1 once a thread loads the value again (see FromCache), 0 before or after a failed load.</summary>
+            /// <summary>1 once a thread checks or loads the value again (see FromCache), 0 before or after a failure.</summary>
             private int reloading;
 
-            public Cached(T value)
+            public Cached(T value, DateTime loaded)
             {
                 Value = value;
+                Loaded = loaded;
                 Expires = Clock() + CacheTime;
             }
 
             public T Value { get; }
+            public DateTime Loaded { get; }
             public DateTime Expires { get; }
 
-            /// <summary>True for one thread only, the first to ask: that one loads the value again.</summary>
+            /// <summary>True for one thread only, the first to ask: that one checks or loads the value again.</summary>
             public bool StartReload()
             {
                 return Interlocked.CompareExchange(ref reloading, 1, 0) == 0;
             }
 
-            /// <summary>After a failed load: the next thread to ask loads the value again.</summary>
+            /// <summary>After a failed check or load: the next thread to ask does it again.</summary>
             public void ReloadFailed()
             {
                 Interlocked.Exchange(ref reloading, 0);
@@ -988,37 +1082,46 @@ namespace NToNMultiSelect.NamesCopy
         }
 
         /// <summary>
-        /// The value kept under `key`, loaded again once it is older than CacheTime. One thread loads it again, the
-        /// first to find it expired; the others keep the old value meanwhile instead of all sending the same query at
-        /// once (every link in the environment reads the forms). The new value replaces the old one in one step, so
-        /// other threads read either. With no value at all, each thread loads its own. Failures are thrown, not kept:
-        /// the next thread to ask loads again.
+        /// The value kept under `key`. CacheTime after it was loaded or last checked, the first thread to find it so
+        /// checks it with `renew` (one quick query at most): the value to keep (the same one, or one read again in
+        /// part), or null when it is out of date. It is loaded in full instead when `renew` gives null or there is
+        /// none, and once MaxCacheTime has passed since its last full load. The other threads keep the old value
+        /// meanwhile instead of all sending the same query at once (every link in the environment reads the forms). The
+        /// new value replaces the old one in one step, so other threads read either. With no value at all, each thread
+        /// loads its own. Failures are thrown, not kept: the next thread to ask checks or loads again.
         /// </summary>
-        private static T FromCache<TKey, T>(ConcurrentDictionary<TKey, Cached<T>> cache, TKey key, Func<T> load)
+        private static T FromCache<TKey, T>(ConcurrentDictionary<TKey, Cached<T>> cache, TKey key, Func<T> load, Func<T, T> renew = null)
+            where T : class
         {
             if (cache.TryGetValue(key, out var cached) && (cached.Expires > Clock() || !cached.StartReload())) return cached.Value;
-            T value;
+            T value = null;
+            var loaded = Clock();
             try
             {
-                value = load();
+                if (cached != null && renew != null && cached.Loaded + MaxCacheTime > loaded) value = renew(cached.Value);
+                if (value != null) loaded = cached.Loaded;
+                else value = load();
             }
             catch
             {
                 cached?.ReloadFailed();
                 throw;
             }
-            cache[key] = new Cached<T>(value);
+            cache[key] = new Cached<T>(value, loaded);
             return value;
         }
 
-        /// <summary>Drops the plans of settings no longer used, so that the cache doesn't grow as forms change.</summary>
-        private static void DropExpiredPlans()
+        /// <summary>
+        /// Drops the plans due for a full load (see MaxCacheTime), which settings no longer used are among, so that the
+        /// cache doesn't grow as forms change.
+        /// </summary>
+        private static void DropOldPlans()
         {
             var now = Clock();
             foreach (var plan in Plans)
             {
                 // Removes the entry only if no other thread has replaced it meanwhile.
-                if (plan.Value.Expires <= now) ((ICollection<KeyValuePair<string, Cached<CopyPlan>>>)Plans).Remove(plan);
+                if (plan.Value.Loaded + MaxCacheTime <= now) ((ICollection<KeyValuePair<string, Cached<CopyPlan>>>)Plans).Remove(plan);
             }
         }
     }

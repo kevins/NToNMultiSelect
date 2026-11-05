@@ -85,6 +85,7 @@ const CSS = `
 .ntnms-option-text{flex:1 1 auto;min-width:0;padding:8px 0 7px;padding-inline-start:35px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .ntnms-count{flex:0 0 auto;padding:0 14px;color:#242424;white-space:nowrap}
 .ntnms-list{position:relative;margin:0;padding:0;list-style:none;max-height:140px;overflow-x:hidden;overflow-y:auto;outline:none}
+.ntnms-menu.is-without-select-all .ntnms-list{max-height:175px}
 .ntnms-menu .ntnms-create{position:relative;display:block;box-sizing:border-box;width:100%;height:35px;margin:0;padding:0 13px;border:0;border-top:1px solid #e1dfdd;background:transparent;color:#2975b2;font:inherit;text-align:start;cursor:pointer;outline:none}
 .ntnms-menu .ntnms-create.is-current::after{content:"";position:absolute;top:0;right:0;bottom:0;left:0;border:1px solid #000;pointer-events:none}
 .ntnms-menu .ntnms-create:hover{background:#efefef;color:#6199d1}
@@ -113,7 +114,7 @@ const CSS = `
 .ntnms-error-dismiss{margin-inline-start:auto;padding:0 2px;border:0;background:transparent;color:#a4262c;font-size:12px;cursor:pointer;text-decoration:underline}
 `;
 
-const STYLE_ID = "ntnms-styles-v8";
+const STYLE_ID = "ntnms-styles-v9";
 
 export function ensureStyles(doc: Document = document): void {
     if (doc.getElementById(STYLE_ID)) {

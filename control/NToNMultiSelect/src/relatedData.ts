@@ -28,6 +28,13 @@ export interface OptionsPage {
     nextLink: string | null;
 }
 
+/** The host column of a record as saved, the version the record had then (its ETag), and the records linked to it. */
+export interface SavedHost {
+    value: string | null;
+    version: string;
+    items: Item[];
+}
+
 export interface OptionsQuery {
     showInactive: boolean;
     extraFilter: string;
@@ -41,10 +48,6 @@ export interface OptionsQuery {
     excludeId: string | null;
 }
 
-/**
- * Dataverse evaluates contains() and startswith() as SQL LIKE, so %, _ and [ act as wildcards. Wrapping them in
- * brackets makes a search for e.g. "50%" or "C_Sharp" match literally.
- */
 /**
  * The tag of a link the control makes or removes while it writes the host column copy itself ("Copy names into the
  * host column"). The Web API hands it to the plug-ins of the request (in SharedVariables), and the names copy plug-in
@@ -60,6 +63,10 @@ function tagQuery(tag?: string): string {
     return tag ? `?tag=${encodeURIComponent(tag)}` : "";
 }
 
+/**
+ * Dataverse evaluates contains() and startswith() as SQL LIKE, so %, _ and [ act as wildcards. Wrapping them in
+ * brackets makes a search for e.g. "50%" or "C_Sharp" match literally.
+ */
 export function escapeLikeWildcards(term: string): string {
     return term.replace(/[[%_]/g, (ch) => `[${ch}]`);
 }
@@ -251,15 +258,34 @@ export class RelatedData {
     }
 
     /**
-     * Sets one column of the record the links belong to ("Copy names into the host column"). If-Match: * keeps it an
-     * update: without it, a PATCH to a record that was just deleted would create it again.
+     * `column` of the record the links belong to as saved now, with the record's version (see updateRecord), and the
+     * records linked to it as loadSelected reads them: one request, as quick as reading the links alone. A record with
+     * more links than one page holds gets the others from the pages that follow.
      */
+    public async readHostAndLinks(recordId: string, column: string): Promise<SavedHost> {
+        const { currentEntitySet, navigationProperty, targetIdAttribute, targetNameAttribute } = this.rel;
+        const expand = `${navigationProperty}($select=${targetIdAttribute},${targetNameAttribute};$orderby=${targetNameAttribute} asc,${targetIdAttribute} asc)`;
+        const row = await this.client.get<Record<string, unknown>>(`${currentEntitySet}(${recordId})?$select=${column}&$expand=${expand}`, { maxPageSize: 5000, noCache: true });
+        const rows = (row[navigationProperty] as Record<string, unknown>[] | undefined) ?? [];
+        const next = row[`${navigationProperty}@odata.nextLink`];
+        if (typeof next === "string") rows.push(...(await this.client.getAll<Record<string, unknown>>(next, { maxPageSize: 5000, noCache: true })));
+        const value = row[column];
+        return {
+            value: typeof value === "string" ? value : null,
+            version: typeof row["@odata.etag"] === "string" ? row["@odata.etag"] : "*",
+            items: rows.map((link) => this.toItem(link)),
+        };
+    }
+
     /**
-     * Writes `value` into `column` of the record. Sent with keepalive: once on its way, the browser finishes it even if
-     * the user closes the page meanwhile (see SendOptions.keepalive).
+     * Writes `value` into `column` of the record the links belong to ("Copy names into the host column"). With the
+     * `version` readHostAndLinks gave, only while the record still has it: once anyone has changed the record since,
+     * Dataverse refuses the write (412) instead of letting older names replace newer ones. If-Match keeps it an update
+     * either way: without it, a PATCH to a record that was just deleted would create it again. Sent with keepalive:
+     * once on its way, the browser finishes it even if the user closes the page meanwhile (see SendOptions.keepalive).
      */
-    public async updateRecord(recordId: string, column: string, value: string | null): Promise<void> {
-        await this.client.send("PATCH", `${this.rel.currentEntitySet}(${recordId})`, { [column]: value }, { "If-Match": "*" }, { keepalive: true });
+    public async updateRecord(recordId: string, column: string, value: string | null, version = "*"): Promise<void> {
+        await this.client.send("PATCH", `${this.rel.currentEntitySet}(${recordId})`, { [column]: value }, { "If-Match": version }, { keepalive: true });
     }
 
     private toItem(row: Record<string, unknown>): Item {

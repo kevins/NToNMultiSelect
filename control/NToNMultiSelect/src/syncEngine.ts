@@ -31,9 +31,12 @@ const MAX_PARALLEL = 4;
 export class SyncEngine {
     private confirmed = new Map<string, Item>();
     private desired = new Map<string, Item>();
-    private inFlight = new Set<string>();
+    /** Writes on their way, by record: whether each adds or removes the link. */
+    private inFlight = new Map<string, "add" | "remove">();
     /** Adds that failed in a way that may still have saved them, until the next read of the saved links. */
     private uncertain = new Set<string>();
+    /** Removals that failed in a way that may still have taken the link away, until the next read of the saved links. */
+    private uncertainRemovals = new Set<string>();
     private recordId: string | null = null;
     private running = false;
     private changedInBatch = false;
@@ -65,8 +68,9 @@ export class SyncEngine {
         const pendingRemoves = [...this.confirmed.keys()].filter((id) => !this.desired.has(id));
         this.confirmed = new Map(items.map((i) => [i.id, i]));
         this.desired = new Map(this.confirmed);
-        // The saved links are known again: an add whose outcome wasn't known is either among them or not saved.
+        // The saved links are known again: an add or a removal whose outcome wasn't known is settled by them.
         this.uncertain.clear();
+        this.uncertainRemovals.clear();
         for (const item of pendingAdds) {
             this.desired.set(item.id, item);
         }
@@ -110,7 +114,7 @@ export class SyncEngine {
         for (const id of this.confirmed.keys()) {
             if (!this.desired.has(id)) ids.add(id);
         }
-        for (const id of this.inFlight) {
+        for (const id of this.inFlight.keys()) {
             if (!this.desired.has(id)) ids.add(id);
         }
         for (const id of this.uncertain) {
@@ -119,9 +123,12 @@ export class SyncEngine {
         return ids;
     }
 
-    /** Whether an add whose outcome isn't known still holds a place (only a read of the saved links settles it). */
+    /**
+     * Whether a write whose outcome isn't known waits for a read of the saved links to settle it: an add that may hold a
+     * place, or a removal that may have taken the link away.
+     */
     public hasUncertain(): boolean {
-        return this.uncertain.size > 0;
+        return this.uncertain.size > 0 || this.uncertainRemovals.size > 0;
     }
 
     /** How many records take a place toward Maximum selections: the selected ones and the placeHolders(). */
@@ -135,6 +142,33 @@ export class SyncEngine {
             this.sortedCache = [...this.desired.values()].sort(compareItems);
         }
         return this.sortedCache;
+    }
+
+    /**
+     * The selected records known to stay saved. Left out: picks still on their way or waiting for a new record's first
+     * save, a record picked again while its removal is on its way (the removal goes through first, then the record is
+     * linked again), and one whose removal failed in a way that may still have taken the link away. Sorted by name, like
+     * selected().
+     */
+    public savedSelected(): Item[] {
+        return this.selected().filter((item) => this.confirmed.has(item.id) && this.inFlight.get(item.id) !== "remove" && !this.uncertainRemovals.has(item.id));
+    }
+
+    /** Whether the server has answered that `id` is linked (see savedSelected for whether it stays so). */
+    public isConfirmed(id: string): boolean {
+        return this.confirmed.has(id);
+    }
+
+    /** Records whose link this engine is taking away: removals waiting, on their way, or of unknown outcome. */
+    public removals(): Set<string> {
+        const ids = new Set(this.uncertainRemovals);
+        for (const id of this.confirmed.keys()) {
+            if (!this.desired.has(id)) ids.add(id);
+        }
+        for (const [id, operation] of this.inFlight) {
+            if (operation === "remove") ids.add(id);
+        }
+        return ids;
     }
 
     /**
@@ -263,7 +297,7 @@ export class SyncEngine {
     }
 
     private async run(item: Item, operation: "add" | "remove", recordId: string): Promise<void> {
-        this.inFlight.add(item.id);
+        this.inFlight.set(item.id, operation);
         try {
             if (operation === "add") {
                 await this.executor.associate(recordId, item.id);
@@ -273,6 +307,7 @@ export class SyncEngine {
                 await this.executor.disassociate(recordId, item.id);
                 this.confirmed.delete(item.id);
             }
+            this.uncertainRemovals.delete(item.id);
             this.changedInBatch = true;
         } catch (error) {
             if (this.disposed) {
@@ -285,8 +320,9 @@ export class SyncEngine {
                 this.desired.set(item.id, this.confirmed.get(item.id) ?? item);
             }
             this.sortedCache = null;
-            if (this.callbacks.onError(item, operation, error) === true && operation === "add") {
-                this.uncertain.add(item.id);
+            // A write that may have been saved all the same is settled only by a read of the saved links.
+            if (this.callbacks.onError(item, operation, error) === true) {
+                (operation === "add" ? this.uncertain : this.uncertainRemovals).add(item.id);
             }
         } finally {
             this.inFlight.delete(item.id);

@@ -70,8 +70,10 @@ export interface ViewCallbacks {
 const ERROR_ICON =
     '<svg class="ntnms-error-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="7.5" fill="#a4262c"/><path d="M8 4v5" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="11.6" r="1" fill="#fff"/></svg>';
 
-/** Height of the list's scrolling part: four 35px rows, the same as the native control. */
+/** Height of the list's scrolling part: four 35px rows under Select all, the same as the native control. */
 const LIST_MAX_HEIGHT = 140;
+/** Height of a row: without Select all, the list takes its place and shows five (see listMaxHeight). */
+const ROW_HEIGHT = 35;
 /** Tallest the whole list can get (padding, Select all, note, rows, + New, borders); used to pick a side once. */
 const MENU_MAX_HEIGHT = 13 + 35 + 22 + LIST_MAX_HEIGHT + 35 + 2;
 /** Chips rendered while the field is collapsed. More are only built when the user expands the field. */
@@ -123,6 +125,8 @@ export class MultiSelectView {
 
     private state: ViewState | null = null;
     private selectedIds = new Set<string>();
+    /** The chip of each record shown, with what it was built from (see renderChips). */
+    private readonly chipElements = new Map<string, { chip: HTMLLIElement; key: string }>();
     /**
      * Selected rows the mouse has left since the selection last changed. The native list draws them lighter until it
      * is drawn again, which it does on every change of the selection. The mouse only adds to this set (and draws that
@@ -425,61 +429,86 @@ export class MultiSelectView {
     }
 
     private renderChips(state: ViewState): void {
-        const doc = this.container.ownerDocument;
-        this.chipsList.textContent = "";
         // A record can have hundreds of links; only build what can be seen unless the user expanded the field, or the
         // keyboard highlight is on a chip past the first ones.
         const currentIndex = this.chipCurrent === null ? -1 : state.selected.findIndex((i) => i.id === this.chipCurrent);
         const shown = this.expanded || currentIndex >= MAX_COLLAPSED_CHIPS ? state.selected : state.selected.slice(0, MAX_COLLAPSED_CHIPS);
         // The keyboard highlight stays on its record; once that record is no longer selected, the chip navigation ends.
         if (this.chipCurrent !== null && !state.selected.some((i) => i.id === this.chipCurrent)) this.chipCurrent = null;
-        shown.forEach((item) => {
-            const chip = doc.createElement("li");
-            chip.className = "ntnms-chip";
-            chip.dataset.id = item.id;
-            if (state.pending.has(item.id)) chip.classList.add("is-saving");
-            if (item.id === this.chipCurrent) chip.classList.add("is-current");
-            chip.title = item.name;
-            chip.setAttribute("aria-label", item.name);
+        // A chip is kept while its record stays shown with the same name and link, so that a change touches only the
+        // chips it adds or removes: an expanded field can show thousands.
+        const wanted = new Set<string>();
+        const chips = shown.map((item) => {
             const url = state.openRecords ? this.callbacks.recordUrl(item) : null;
-            if (url) {
-                // Only the name is the link: the rest of the chip still just focuses the box. The keyboard opens it with
-                // Enter on the highlighted chip (see onChipKey), so the link itself stays out of the tab order.
-                const link = this.recordLink(url, item.name, "ntnms-chip-text ntnms-chip-link");
-                link.tabIndex = -1;
-                chip.appendChild(link);
-            } else {
-                const text = doc.createElement("span");
-                text.className = "ntnms-chip-text";
-                text.textContent = item.name;
-                chip.appendChild(text);
+            const key = JSON.stringify([item.name, url, state.disabled]);
+            let kept = this.chipElements.get(item.id);
+            if (!kept || kept.key !== key) {
+                kept?.chip.remove();
+                kept = { chip: this.buildChip(item, url, state.disabled), key };
+                this.chipElements.set(item.id, kept);
             }
-            if (!state.disabled) {
-                const remove = doc.createElement("button");
-                remove.type = "button";
-                remove.className = "ntnms-chip-remove";
-                remove.tabIndex = -1;
-                remove.setAttribute("aria-label", this.t.remove(item.name));
-                remove.title = this.t.remove(item.name);
-                const glyph = doc.createElement("span");
-                glyph.className = "ntnms-glyph";
-                glyph.setAttribute("aria-hidden", "true");
-                glyph.textContent = GLYPH.remove;
-                remove.appendChild(glyph);
-                remove.addEventListener("mousedown", (e) => e.preventDefault());
-                remove.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    if (remove === this.tapped) {
-                        // The end of a tap that focused the box (see mousedown): the x wasn't showing when it started.
-                        this.tapped = null;
-                        return;
-                    }
-                    this.removeWithX(item);
-                });
-                chip.appendChild(remove);
-            }
-            this.chipsList.appendChild(chip);
+            wanted.add(item.id);
+            kept.chip.classList.toggle("is-saving", state.pending.has(item.id));
+            kept.chip.classList.toggle("is-current", item.id === this.chipCurrent);
+            return kept.chip;
         });
+        for (const [id, kept] of this.chipElements) {
+            if (wanted.has(id)) continue;
+            kept.chip.remove();
+            this.chipElements.delete(id);
+        }
+        // In the order shown, moving only the chips that are out of place.
+        chips.forEach((chip, index) => {
+            const there = this.chipsList.children[index];
+            if (there !== chip) this.chipsList.insertBefore(chip, there ?? null);
+        });
+    }
+
+    /** The chip of `item`: its name (a link to `url`, when given) and, unless `disabled`, its x. */
+    private buildChip(item: Item, url: string | null, disabled: boolean): HTMLLIElement {
+        const doc = this.container.ownerDocument;
+        const chip = doc.createElement("li");
+        chip.className = "ntnms-chip";
+        chip.dataset.id = item.id;
+        chip.title = item.name;
+        chip.setAttribute("aria-label", item.name);
+        if (url) {
+            // Only the name is the link: the rest of the chip still just focuses the box. The keyboard opens it with
+            // Enter on the highlighted chip (see onChipKey), so the link itself stays out of the tab order.
+            const link = this.recordLink(url, item.name, "ntnms-chip-text ntnms-chip-link");
+            link.tabIndex = -1;
+            chip.appendChild(link);
+        } else {
+            const text = doc.createElement("span");
+            text.className = "ntnms-chip-text";
+            text.textContent = item.name;
+            chip.appendChild(text);
+        }
+        if (!disabled) {
+            const remove = doc.createElement("button");
+            remove.type = "button";
+            remove.className = "ntnms-chip-remove";
+            remove.tabIndex = -1;
+            remove.setAttribute("aria-label", this.t.remove(item.name));
+            remove.title = this.t.remove(item.name);
+            const glyph = doc.createElement("span");
+            glyph.className = "ntnms-glyph";
+            glyph.setAttribute("aria-hidden", "true");
+            glyph.textContent = GLYPH.remove;
+            remove.appendChild(glyph);
+            remove.addEventListener("mousedown", (e) => e.preventDefault());
+            remove.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (remove === this.tapped) {
+                    // The end of a tap that focused the box (see mousedown): the x wasn't showing when it started.
+                    this.tapped = null;
+                    return;
+                }
+                this.removeWithX(item);
+            });
+            chip.appendChild(remove);
+        }
+        return chip;
     }
 
     /** Read-only with "Open selected records" and something selected: the value shows the names as links. */
@@ -531,6 +560,11 @@ export class MultiSelectView {
         return link;
     }
 
+    /** The list's height with room to spare: four rows under Select all, five without it. */
+    private listMaxHeight(): number {
+        return this.menu.classList.contains("is-without-select-all") ? LIST_MAX_HEIGHT + ROW_HEIGHT : LIST_MAX_HEIGHT;
+    }
+
     /** Only the "saving" look changed (a write finished): update the existing chips instead of rebuilding them. */
     private updateChipStates(state: ViewState): void {
         for (const chip of Array.from(this.chipsList.children) as HTMLElement[]) {
@@ -541,7 +575,10 @@ export class MultiSelectView {
     private renderMenu(state: ViewState, previous: ViewState | null): void {
         // Header row.
         const allSelected = state.options.length > 0 && state.options.every((o) => this.isSelected(o.id));
-        this.selectAllRow.style.display = state.canSelectAll && state.options.length > 0 ? "" : "none";
+        const selectAllShown = state.canSelectAll && state.options.length > 0;
+        this.selectAllRow.style.display = selectAllShown ? "" : "none";
+        // Without Select all, the list takes its place: five rows, and the menu keeps its height.
+        this.menu.classList.toggle("is-without-select-all", !selectAllShown);
         this.selectAllRow.setAttribute("aria-selected", String(allSelected));
         this.selectAllCheck.textContent = allSelected ? GLYPH.checked : GLYPH.unchecked;
         this.countText.textContent = this.t.itemCount(state.options.length);
@@ -778,7 +815,7 @@ export class MultiSelectView {
         const room = (this.placeAbove ? rect.top - area.top : area.bottom - rect.bottom) - 8;
         const fixedPart = this.menu.offsetHeight - this.list.offsetHeight;
         if (room > 0 && this.menu.offsetHeight > 0) {
-            this.list.style.maxHeight = `${Math.max(35, Math.min(LIST_MAX_HEIGHT, Math.floor(room - fixedPart)))}px`;
+            this.list.style.maxHeight = `${Math.max(ROW_HEIGHT, Math.min(this.listMaxHeight(), Math.floor(room - fixedPart)))}px`;
         }
         if (this.placeAbove) {
             style.top = "";
@@ -1011,6 +1048,7 @@ export class MultiSelectView {
     }
 
     private onKeyDown(e: KeyboardEvent): void {
+        if (isComposing(e)) return;
         const s = this.state;
         if (!s || !this.editable()) return;
         this.keyboardHighlight = true;
@@ -1261,7 +1299,7 @@ export class MultiSelectView {
      * focus.
      */
     private onChipsListKey(e: KeyboardEvent): void {
-        if (e.target !== this.chipsList || !this.editable()) return;
+        if (isComposing(e) || e.target !== this.chipsList || !this.editable()) return;
         if (e.key === "Tab") return;
         if (this.chipCurrent === null) {
             this.focusInput();
@@ -1553,6 +1591,14 @@ export class MultiSelectView {
 
 /** Adds to `target` the ids that are in only one of the two sets. */
 const NONE: ReadonlySet<string> = new Set<string>();
+
+/**
+ * A key of an input method composing text (Japanese, Chinese, Korean...): Enter commits the text, Escape cancels it,
+ * the arrows pick a candidate, so they are not the list's. keyCode 229 is how browsers mark them besides isComposing.
+ */
+function isComposing(e: KeyboardEvent): boolean {
+    return e.isComposing || e.keyCode === 229;
+}
 
 /** Whether a record that isn't selected still takes a place toward the limit (see ViewState.held), or is being removed. */
 function holdsPlace(state: ViewState, id: string): boolean {

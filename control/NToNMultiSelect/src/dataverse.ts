@@ -51,6 +51,11 @@ interface RequestOptions {
     maxPageSize?: number;
     /** More Prefer header preferences, e.g. which annotations to include. */
     prefer?: string[];
+    /**
+     * Never answered from the browser's cache (If-None-Match: null), as Microsoft advises for a query that expands a
+     * collection-valued navigation property: the expanded rows could otherwise come from an earlier answer.
+     */
+    noCache?: boolean;
     signal?: AbortSignal;
 }
 
@@ -135,6 +140,9 @@ export class DataverseClient {
         const prefer = [...(options.maxPageSize ? [`odata.maxpagesize=${options.maxPageSize}`] : []), ...(options.prefer ?? [])];
         if (prefer.length) {
             headers.Prefer = prefer.join(",");
+        }
+        if (options.noCache) {
+            headers["If-None-Match"] = "null";
         }
         const reply = await this.request(this.resolve(pathOrUrl), { method: "GET", headers }, options.signal);
         return (reply.body ? JSON.parse(reply.body) : {}) as T;

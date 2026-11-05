@@ -11,8 +11,8 @@ The same demo as a [video on YouTube](https://www.youtube.com/watch?v=2jof2VszZj
 
 | Item | Value |
 | --- | --- |
-| Control | `KV.NToNMultiSelect`, display name *N:N Multi-Select*, version 1.0.0 |
-| Solutions | `NToNMultiSelect` (*N:N Multi-Select*): the control and the form library.<br>`NToNMultiSelectWithPlugin` (also *N:N Multi-Select*): the same, plus the names copy plug-in with its link steps (Associate and Disassociate) and the steps page.<br>Both version 1.0.0.0, each as a managed and an unmanaged package. See [Which solution](#which-solution) |
+| Control | `KV.NToNMultiSelect`, display name *N:N Multi-Select*, version 1.0.1 |
+| Solutions | `NToNMultiSelect` (*N:N Multi-Select*): the control and the form library.<br>`NToNMultiSelectWithPlugin` (also *N:N Multi-Select*): the same, plus the names copy plug-in with its link steps (Associate and Disassociate) and the steps page.<br>Both version 1.0.1.0, each as a managed and an unmanaged package. See [Which solution](#which-solution) |
 | Plug-in (solution with the plug-in only) | Assembly `NToNMultiSelect.NamesCopy`, plug-in type `NToNMultiSelect.NamesCopy.NamesCopyPlugin` (*N:N Multi-Select names copy*), sandbox, .NET Framework 4.6.2, two steps (Associate and Disassociate), plus the Delete and Update steps that the steps page creates for your linked tables. See [Names copy plug-in](#names-copy-plug-in-optional) and [what each step costs](#time-trade-offs-what-each-step-costs) |
 | Steps page (solution with the plug-in only) | HTML web resource `kv_/NToNMultiSelect/namescopysteps.html` (*N:N Multi-Select names copy: steps for your tables*), for administrators: creates the plug-in's Delete and Update steps for your linked tables only. Open it at `https://<your environment>/WebResources/kv_/NToNMultiSelect/namescopysteps.html`. See [The steps page](#the-steps-page) |
 | Publisher | `KV`, prefix `kv`, choice value prefix 72720 |
@@ -29,7 +29,7 @@ one.
 * [Features](#features) and [screenshots](#screenshots)
 * [Download](#download)
 * [Install](#install), [which solution](#which-solution) and [add the control to a form](#add-the-control-to-a-form)
-* [Settings](#settings), including [Maximum selections](#maximum-selections), [+ New](#-new-quick-create), [Copy names into the host column](#copy-names-into-the-host-column) and [column security](#column-security-on-the-host-column)
+* [Settings](#settings), including [Maximum selections](#maximum-selections), [+ New](#-new-quick-create), [Copy names into the host column](#copy-names-into-the-host-column), [a required host column](#a-required-host-column), [reading the selection in form scripts](#reading-the-selection-in-form-scripts) and [column security](#column-security-on-the-host-column)
 * [Form library (optional)](#form-library-optional)
 * [Names copy plug-in (optional)](#names-copy-plug-in-optional), including [what each step costs](#time-trade-offs-what-each-step-costs), [the steps page](#the-steps-page) and [turning steps off](#turning-steps-off)
 * [Messages](#messages), [Upgrade](#upgrade), [Uninstall](#uninstall) and [Troubleshooting](#troubleshooting)
@@ -52,6 +52,10 @@ one.
 
 * **Saved immediately.** Each pick is saved as an association straight away (unpicking removes it). The form is never
   made dirty, so required fields elsewhere on the form do not block the change.
+* **Can be required.** The host column can be Business Required, made required by a business rule, or a required step
+  of a business process flow: the form cannot be saved, or move to the next stage, until something is selected, with
+  the form's own messages. The last value cannot be taken away by removing it and leaving the record. See
+  [A required host column](#a-required-host-column).
 * **Subgrids stay in sync.** Subgrids on the form that show the same relationship refresh after a change, and links
   added or removed in those subgrids appear in the control. The control can also take the place of those subgrids
   and hide them.
@@ -141,7 +145,7 @@ The solution packages are attached to each release on the [Releases](../../relea
 | `NToNMultiSelect_managed.zip` | Solution without the plug-in, managed: for test and production environments |
 | `NToNMultiSelectWithPlugin_unmanaged.zip` | Solution with the names copy plug-in, its link steps (Associate, Disassociate) and the [steps page](#the-steps-page), unmanaged: for development environments |
 | `NToNMultiSelectWithPlugin_managed.zip` | Solution with the names copy plug-in, its link steps and the steps page, managed: for test and production environments |
-| `README.txt` | Component names of the build, notes on the plug-in and on replacing an installed 1.0.0, and SHA-256 checksums of the zip files |
+| `README.txt` | Component names of the build, notes on the plug-in and on upgrading from 1.0.0, and SHA-256 checksums of the zip files |
 | `NToNMultiSelect-Technical-Reference.docx` | Installation, settings, form library, the names copy plug-in, upgrade, uninstall and troubleshooting, step by step with screenshots |
 | `NToNMultiSelect-Developer-Guide.docx` | The developer guide as a Word document: how the control, the form library and the plug-in are built and how to change them |
 
@@ -245,9 +249,10 @@ the unmanaged solution the page is in: nine components (see [When it runs](#when
 1. **Find the relationship's schema name.** **Tables** → the table of the form → **Relationships** → the
    many-to-many relationship → *Relationship name* (for example `new_project_skill`). Any casing works.
 2. **Pick a host column.** The control is placed on a text column of the form's table: *Single line of text*,
-   *Text area* or *Multiple lines of text*. The column must **not be Business Required**: the control never sets its
-   value on the form, so a required column would block every save. A new single line of text column (for example
-   *Project skills*) is the safest choice. If *Copy names into the host column* will be turned on, give the column room
+   *Text area* or *Multiple lines of text*. A new single line of text column (for example *Project skills*) is the
+   safest choice. The column may be **Business Required**: the control fills it on the form with the selected names,
+   which the form never saves, so the form can only be saved once something is selected (see
+   [A required host column](#a-required-host-column)). If *Copy names into the host column* will be turned on, give the column room
    for all the names (for example 4,000 characters, or *Multiple lines of text*); the copy is cut to the column's
    length.
 3. **Open the form** in the form designer and add the host column to the form if it is not already there. Select it.
@@ -284,14 +289,14 @@ users: it writes as the system user.
 
 ## Settings
 
-<img src="docs/images/settings-panel.png" alt="The complete settings panel of the control" width="760">
+<img src="docs/images/settings-panel.png" alt="The settings panel of the control" width="760">
 
 The single-line text settings have *Static value* and *Bind to table column*; *FetchXML filter* takes a static value
 only. Leave *Bind to table column* cleared and type the value under *Static value*; it then applies to every record.
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Host column | (required) | Any text column on the form that is not Business Required. The control uses it only as an anchor and never sets its value on the form, so a required column would block saving. To store the selected names in this column, turn on *Copy names into the host column*. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column |
+| Host column | (required) | Any text column on the form. The control fills it on the form with the selected names, which the form never saves, so the column can be required (Business Required, a business rule, or a required step of a business process flow): saving, or moving to the next stage, is then blocked until something is selected. Other copies of the column on the form become read-only. To store the selected names in this column, turn on *Copy names into the host column*. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column |
 | N:N relationship schema name | (required) | The relationship to edit, for example `new_project_skill`. Not case-sensitive |
 | Extra OData filter | empty | Limits the records that can be selected, for example `new_category eq 2`. Cannot be combined with a view or FetchXML |
 | Records from view | empty | Name or id of a system view of the related table; only records the view returns can be selected, in the view's sort order. Use the id when view names are translated. See [Choosing which records can be selected](#choosing-which-records-can-be-selected) |
@@ -306,7 +311,8 @@ only. Leave *Bind to table column* cleared and type the value under *Static valu
 | Subgrids to refresh | empty (all subgrids with the same relationship) | Comma-separated subgrid names, or `none` (no refresh, and changes made in subgrids are not followed) |
 | Hide related subgrids | No | Yes: the control takes the place of the related subgrids and hides them. See [Subgrids](#subgrids) |
 | Placeholder | Select or search options | Text in the empty search box |
-| Copy names into the host column | No | No: the host column is never changed. Yes: after each change is saved, the selected names (for example "API design; Automation") are written to the host column of the record in a separate update, for views, search and exports. The text is cut to the column's maximum length, so give the column room (for example 4,000 characters); records linked before the setting was turned on need a one-time update. The form is not made dirty, plug-ins, flows and auditing see the update, and users need Write on the record. Only changes made with this control or with subgrids on the same form are copied, with the records the user can see. Anyone who can read the record can read the names: when the related table holds restricted records, leave this off or secure the host column with column security (users who are not allowed to update the column then see the control read-only). With the [names copy plug-in](#names-copy-plug-in-optional) solution installed, changes made elsewhere (imports, flows, integrations or the other side of the relationship) are copied too, with every linked name. See [Copy names into the host column](#copy-names-into-the-host-column) |
+| Copy names into the host column | No | No: nothing is written to the host column of the record. Yes: after each change is saved, the selected names (for example "API design; Automation") are written to the host column of the record in a separate update, for views, search and exports. The text is cut to the column's maximum length, so give the column room (for example 4,000 characters); records linked before the setting was turned on need a one-time update. The form is not made dirty, plug-ins, flows and auditing see the update, and users need Write on the record. Only changes made with this control or with subgrids on the same form are copied, with the records the user can see. Anyone who can read the record can read the names: when the related table holds restricted records, leave this off or secure the host column with column security (users who are not allowed to update the column then see the control read-only). With the [names copy plug-in](#names-copy-plug-in-optional) solution installed, changes made elsewhere (imports, flows, integrations or the other side of the relationship) are copied too, with every linked name. See [Copy names into the host column](#copy-names-into-the-host-column) |
+| Selection on the form | No | What the form is told about the selection, through the host column on the form. No: the column shows the names of the saved values (on a new record, the picks waiting for the first save), for scripts and the required check; the form never saves them and no event runs. Event: the same, and the column's OnChange event runs after each change of the selection, once it is saved (a removal once it has gone through, the removal of a required field's last value at once; on a new record, at each change before the first save). See [Reading the selection in form scripts](#reading-the-selection-in-form-scripts) |
 | Show + New button | No | Yes: adds "+ New ..." at the end of the list, which opens quick create and selects the new record if the list offers it. Only shown when the related table allows quick create |
 
 The form designer shows a fuller description of each setting as its tooltip. There, *Extra OData filter*, *Records
@@ -392,14 +398,13 @@ opening a record never writes to it, and a new record gets its copy once, after 
 
 ![A view with the host column filled by Copy names into the host column](docs/images/names-in-view.png)
 
-**The saved links are read first.** Just before it writes, the control reads the links saved on the server and writes
-their names, not only the names it has on the page. A link made elsewhere while the form was open (by another user, a
-flow, or from the other side of the relationship) is therefore not overwritten, and the field shows it too. In a
-development environment the names were written about 120 ms after the link was saved (67 ms without this read);
-picking is not slower. A change made elsewhere in the short moment between the read and the write can still be
-missed: about 50 ms in a development environment, longer on a slow connection and when the write has to be resent
-(retries wait 1, 2 and 4 seconds; throttling can make it wait up to about a minute). A change missed this way is in
-the column with the record's next change of links.
+**The saved links are read first.** Just before it writes, the control reads the record and the links saved on the
+server, in one request, and writes their names, not only the names it has on the page. A link made elsewhere while the
+form was open (by another user, a flow, or from the other side of the relationship) is therefore not overwritten, and
+the field shows it too. The write is sent with the record's version from that read (`If-Match` with its ETag): when
+the record changed in between (the names copy plug-in, another tab or another user wrote it), Dataverse refuses the
+write, and the control reads again and writes the names saved now, up to three times. In a development environment the
+names were written about 128 ms after the link was saved (67 ms without the read); picking is not slower.
 
 When that read fails, the control leaves the column as it is and shows "The names could not be copied into
 &lt;field&gt;: &lt;reason&gt;" under the field, with a reason that describes the failed read. A write that fails is
@@ -471,6 +476,99 @@ records they can read, but the copy holds:
 
 When the related table holds records that not everyone may see, leave the setting off, or secure the host column with
 column security so that only the right people can read it (see the next section).
+
+### A required host column
+
+The host column can be required: **Business Required**, required by a business rule or a script, or a required step of
+a business process flow. Each pick is saved at once and the form never saves the column, so the control keeps the
+form's own check meaningful:
+
+* **What the form checks.** On the form, the column holds the names of the saved values (never submitted, and the form
+  is not made dirty). A value still being saved does not count yet: a save in that fraction of a second shows the
+  form's "required" message, which goes once the value is saved (with *Selection on the form* = Event, once all the
+  changes being written are done: after *Select all*, the whole batch; after a replacement for a removed last value,
+  that removal too; right after a new record's first save, as with No). Other controls of the column on the form (a
+  copy in the header, or in a stage of a business process flow) become read-only, so typing there cannot stand in for
+  a pick.
+* **New records.** Picks held for the first save count, so the record can be saved once something is picked; the picks
+  are then linked. Where the field shows "Save the record first ..." (quick create, dialogs, side panes, new
+  appointments), the column's requirement is lifted until the record is saved, so that the record can be created.
+* **Removing the last value.** It disappears from the field and the form cannot be saved, but nothing is sent yet: the
+  removal goes out once another value is saved, or once the field is no longer required (also right after a new
+  record's first save, while its picks are still being linked). Picking it again keeps it.
+  Leaving the record without saving keeps the value, as leaving any emptied required field does (there is no prompt).
+  With *Maximum selections*, picking another value replaces it.
+* **Another tab or user.** Before a removal that would leave a single value, the control reads the record's links again
+  (about 70 ms before that removal is sent; the value still disappears at once): if another tab or user removed the
+  other values in the meantime, the removal is held back as above, and the record keeps a value.
+
+What it does not cover (see [Limitations](#limitations)): two removals in different tabs or by different users within
+the same fraction of a second; a tab that was left open while two or more values were removed elsewhere; links changed
+outside the control (subgrids, flows, imports); and two copies of the same required field on one form in two narrow
+timing cases. To make the requirement hold everywhere, enforce it on the server
+([Enforcing the rules on the server](#enforcing-the-rules-on-the-server)).
+
+### Reading the selection in form scripts
+
+Once the control has read the record's links, the host column on the form holds the names of the saved selected
+values, joined with "; " and cut to the column's maximum length with "…" (null when nothing is selected). A form
+script can read it then, for example in OnSave:
+
+```js
+const names = formContext.getAttribute("<host column>").getValue(); // "Accessibility; API design", or null
+const anySelected = names !== null;
+```
+
+On a saved record, a pick only shows there once its link is saved, so the value matches the links on the server. On a
+new record, the column holds the picks waiting for the first save. On a saved record, until the control has read the
+links (in the form's OnLoad, for example), while they cannot be read, and for users whom column security keeps from
+updating the column, it keeps the value the form loaded. The setting *Selection on the form* decides whether the form
+is also told when the selection changes:
+
+| Selection on the form | OnChange of the host column runs | The form counts it as unsaved | The form saves the names |
+| --- | --- | --- | --- |
+| No (default) | No | No | No |
+| Event | Yes, after each change, once it is saved (on a new record, at each change before the first save) | No | No |
+
+The names shown when the form opens never count as a change, even when the column on the record was out of date: with
+Event, an OnLoad script gets no OnChange when the names replace the loaded value. On a saved record, OnChange runs once
+the changes being written are done (a write whose answer was lost, once a read has settled it), and until then the
+column holds the selection saved before them: a removal counts once it has gone through, a pick or removal the server
+refuses never counts, and changes written together (*Select all*, or picks and removals made while others are still
+being written) count once. On a new record, OnChange runs at each pick or removal, before anything is saved; the first
+save is no change, but a pick the server then refuses runs OnChange again. Only a required field is empty at once when
+its last value is removed, as with No, so that the form blocks the save: with Event, OnChange runs then although nothing
+is sent, and again if the value is picked back. With Event, an empty required column is filled again once all the
+changes being written are done (with No, and while a new record's picks are being linked, at the first saved value):
+after a replacement for the removed value, one request later; after *Select all*, once the whole batch is written.
+OnChange also runs for a change that leaves the names the same (a column too short for them all).
+
+With either value, the column keeps following the selection when the form reloads its data or discards its changes.
+When the column on the record differs from the names shown (for example with *Copy names into the host column* off, or
+after something else wrote the column), the form itself puts that value into the column when it reloads the record,
+and can run OnChange then; the control puts the names back, and with Event OnChange runs again once they are (while
+changes are being written, once those are done), so that the last OnChange sees the selection. The same goes for a
+script that writes the column and runs its OnChange. While a new record's picks are being linked after its first save,
+the names go back without OnChange; once they are all linked, OnChange runs once more if the last OnChange saw other
+names than the linked ones (one that ran meanwhile, or the one for the picks when a pick was then refused or removed).
+Treat the host column as read-only in scripts: one that rewrites it each time OnChange runs gets the names back with
+OnChange at most 3 times in a row, then without, so that it is not started again. Names that go back 2 seconds or more
+after the last time are answered again, so a script whose rewrites come that far apart keeps being answered.
+
+Place the field once per form, and don't let a business rule hide it, when scripts use the host column. Copies of the
+field on one form (in the header, on another tab) share the column, but each copy reads the links on its own: right
+after a new record's first save, and when the links are changed elsewhere (a subgrid), the copies can show different
+names for a moment, and with Event, OnChange can then report one copy's part of the selection, or report a change
+twice; when a pick is refused at a new record's first save, the last OnChange can even keep one copy's part while the
+column shows all the names. Copies also need the same *Selection on the form*. A field that a business rule hides
+leaves the column as it is until it is shown again, and then starts over as when the form opens: with Event, what
+changed meanwhile runs no OnChange (a change saved, a new record's pick refused at a save, or a removed last value
+that comes back because hiding the field dropped its held-back removal).
+
+The form never saves the names itself and is never made unsaved by the control: to store the names on the record, turn
+on *Copy names into the host column*. Neither value makes picking slower: the link is saved first, and the form is told
+afterwards. With **Event**, OnChange scripts and business rules on the host column run after each pick or removal, so a
+slow script makes the form feel slow.
 
 ### Column security on the host column
 
@@ -671,9 +769,11 @@ be turned off and on like any customizable step.
 ### Configuration
 
 None of its own. The plug-in reads the settings of the active forms that have the control with *Copy names into the
-host column* set to Yes: the relationship schema name, the form's table and the host column. It reads them with one
-query and keeps them for 2 minutes in each sandbox worker, so a form change counts within about 2 minutes after the
-form is published.
+host column* set to Yes: the relationship schema name, the form's table and the host column. It finds those forms
+through the dependencies Dataverse keeps of each form on its controls, reads them with one query (page by page), and
+keeps them in each sandbox worker. Every 2 minutes it checks them with one small query (the forms' newest version) and
+reads them again only when a form has changed, so a form change counts within about 2 minutes after the form is
+published; every 30 minutes it reads them in full anyway, which also catches a deleted form.
 
 * Only a relationship schema name typed under *Static value* counts; a value bound to a table column is ignored.
 * Setting *Copy names into the host column* to No on every form turns the plug-in off for that relationship.
@@ -1015,7 +1115,6 @@ Dataverse refuses to remove it while they exist. Then:
 * **One link request with very many records**: more than about 1,000 host records in one Associate or Disassociate
   request can reach the 2-minute limit of synchronous plug-ins, and the whole request is rolled back (see
   [Limitations](#limitations)).
-* **More than 5,000 forms with the control**: only the first 5,000 are read (practically never reached).
 
 ## Messages
 
@@ -1063,10 +1162,26 @@ Multi-Select could not copy the names into &lt;table.column&gt;: &lt;reason&gt;"
 
 ## Upgrade
 
-### Replacing an installed copy of version 1.0.0
+### Upgrading from 1.0.0
 
-This build keeps version 1.0.0. Dataverse keeps the old code component when a solution with the same control version
-is imported, so an environment that already has N:N Multi-Select 1.0.0 needs the old copy removed first:
+This release is version 1.0.1, so it installs over 1.0.0 like any update. Import the package over the installed
+solution: the same solution and the same kind as before (managed over managed, unmanaged over unmanaged). After an
+unmanaged import, select **Publish all customizations**. The forms keep the control and its settings.
+
+For the solution with the plug-in, the import also updates the plug-in and its Associate and Disassociate steps. An
+unmanaged import turns those steps back on and re-creates deleted ones; after a managed import, check them. If they were
+turned off, turn them off again ([Turning steps off](#turning-steps-off)). The import does not touch the steps made on
+the [steps page](#the-steps-page).
+
+The new version takes effect when the customizations are published. A user's first page load after that can still
+run the old version; from the next load on, it runs 1.0.1. Users who still see the old behaviour reload the page once
+more.
+
+### Replacing an installed copy of the same version
+
+Dataverse keeps the old code component when a solution with the same control version is imported, so a rebuilt package
+that keeps the installed version (for example a corrected 1.0.1 over an installed 1.0.1) needs the old copy removed
+first:
 
 1. Note the control's settings on each form that uses it (relationship schema name, view, FetchXML filter and the
    other settings), and whether the form uses the form library and the parameter of its On Load handler.
@@ -1155,10 +1270,11 @@ columns. The publisher `KV` stays in the environment and can be deleted separate
 | --- | --- |
 | An old version of the control (or form) still shows after an update | The browser cached it. Reload with Ctrl+F5. If that is not enough, press F12 → **Application** → **Storage** → **Clear site data** (this signs the user out of that site), then reload |
 | "Error loading control"; console: "Could not find/invoke ... constructor" | The environment did not deliver the control's bundle. Add the [form library](#form-library-optional) |
-| An update made no difference | The control version was not raised, so Dataverse kept the old bundle. Raise the version, rebuild and import again. To install this 1.0.0 build over an earlier 1.0.0, remove the old copy first ([Replacing an installed copy of version 1.0.0](#replacing-an-installed-copy-of-version-100)) |
+| An update made no difference | The control version was not raised, so Dataverse kept the old bundle. Raise the version, rebuild and import again. To install a rebuilt package over an installed copy of the same version, remove the old copy first ([Replacing an installed copy of the same version](#replacing-an-installed-copy-of-the-same-version)) |
 | "... is not a many-to-many relationship of ..." | The schema name is wrong or belongs to another table. The message lists the valid names |
 | A view name is not found, or is reported as translated | Enter the view's id instead of its name |
-| The form cannot be saved while the field is empty | The host column is Business Required. Use a column that is not required (the console also warns about this) |
+| The form cannot be saved while the field is empty | The host column is required (Business Required, a business rule, or a step of a business process flow), so a value must be picked, which is what a required column is for. To make the field optional, make the column optional |
+| A removed value comes back after leaving the record | The host column is required and it was the last value: its removal is only sent once another value is saved ([A required host column](#a-required-host-column)) |
 | "You don't have permission ..." with a privilege name | The user's security role lacks that privilege (for example `prvAppendToContact`) |
 | The field is read-only although the form can be edited | Column security secures the host column and the user's field security profile does not allow Update on it. Allow Update, or use a host column that is not secured ([Column security](#column-security-on-the-host-column)) |
 | At the limit of *Maximum selections*, the other rows stay greyed out after a value was removed | A record keeps its place until its removal is saved, usually a fraction of a second. After a change that failed with a lost connection, a timeout or a server error, which the server may have saved all the same, the place is held until the control has read the saved links again: it tries again after 1, 3 and 9 seconds, and then with the next read of the links, for example when the connection comes back or the record is opened again ([Maximum selections](#maximum-selections)) |
@@ -1211,10 +1327,17 @@ environment.
   ([the tag](#copy-names-into-the-host-column)). Only writing the names on the server for every link would cover this;
   that is not done, because it would cost about 70 ms per link. An update of the column that is already on its way is
   finished by the browser (`keepalive`).
-* **Names copy and changes made at the same moment.** A change made elsewhere between the control's read of the saved
-  links and its write can be missed: about 50 ms in a development environment, longer on a slow connection or when the
-  write is resent. It is in the column with the record's next change of links
-  ([Copy names into the host column](#copy-names-into-the-host-column)).
+* **Names copy and changes made at the same moment.** A change made elsewhere between the control's read and its write
+  makes Dataverse refuse the write, and the control reads again and writes the names saved now. When the record keeps
+  changing (refused again after three more tries), the control reports that the names could not be copied, and the
+  next change writes them ([Copy names into the host column](#copy-names-into-the-host-column)).
+* **A required host column** is checked in the browser, with the links the control knows. Two removals in different tabs
+  or by different users within about 0.1–0.3 s of each other, or a removal in a tab that was left open while two or
+  more values were removed elsewhere, can still leave the record without a value (the form then blocks the save, but
+  the links are gone). Subgrids, flows, imports and the Web API are not checked at all. With two copies of the same
+  required field on one form, two narrow timing cases are not covered either, so place it once per form. See
+  [A required host column](#a-required-host-column) and
+  [Enforcing the rules on the server](#enforcing-the-rules-on-the-server).
 * **Deleting and renaming linked records** (the Delete and Update steps). Each delete or rename updates at most about
   300–350 linked records (30 seconds) and never more than 5,000; the others keep the deleted or old name until their
   links next change ([Time trade-offs](#time-trade-offs-what-each-step-costs)).
@@ -1223,12 +1346,18 @@ environment.
   transaction, about 80–100 ms each. More than about 1,000 host records in one request can reach the 2-minute limit of
   synchronous plug-ins; Dataverse then rolls the whole request back. Link in smaller batches.
 * **Text length.** The copy is cut to the host column's maximum length.
-* **Saving.** Each pick is saved immediately. Discarding the form's other changes does not undo picks. The host
-  column's value on the form does not change, so business rules and OnChange scripts on it do not run when records
-  are picked.
+* **Saving.** Each pick is saved immediately. Discarding the form's other changes does not undo picks. With *Selection
+  on the form* set to No (the default), the control shows the names in the host column on the form without raising its
+  OnChange event, so business rules and OnChange scripts on it do not run when records are picked; Event runs
+  them (see [Reading the selection in form scripts](#reading-the-selection-in-form-scripts)). With Event, two copies
+  of the field on one form can report a change twice or report one copy's part of the selection (after a pick refused
+  at a new record's first save, also in the last OnChange), and a field that a business rule hides and shows again
+  misses what changed meanwhile (a change saved, a pick refused, a removed last value that comes back): place the
+  field once per form, and don't let a business rule hide it, when scripts rely on its OnChange.
 * **New records.** On new records opened in a dialog or side pane, and on new Appointment, Recurring Appointment and
   Service Activity records, the control shows "Save the record first" and records can be picked once the record is
-  saved. On quick create forms, which close when they are saved, the control cannot be used to pick.
+  saved. On quick create forms, which close when they are saved, the control cannot be used to pick. A required host
+  column is not required on those forms until the record is saved.
 * **List.** Only the related table's primary name is shown, sorted by name or in the sort order of the view or
   complete query ([Sort order](#sort-order)). On tables with more than 500 matching records, search matches the start
   of the name by default.
@@ -1318,6 +1447,9 @@ without it, and it works next to the names copy plug-in.
   removal on its way, an undone pick whose link is on its way, and a pick whose save failed in a way that may still
   have saved it, until the saved links are read again. Each copy of the field counts on its own
   ([Maximum selections](#maximum-selections)).
+* **Required host column**: on the form, the column holds the names of the saved values, never submitted, so a required
+  column blocks saving until something is selected; the removal of the last value waits until another value is saved,
+  and a removal that would leave one value reads the saved links first ([A required host column](#a-required-host-column)).
 * **New records**: picks are kept until the record's first successful save, then linked automatically (also with
   Save & Close). If the save is blocked (for example, a required field is empty), nothing is linked and the picks stay
   until the save succeeds. On a quick create form, on a new record opened in a dialog or side pane, and on new
@@ -1325,7 +1457,9 @@ without it, and it works next to the names copy plug-in.
   control shows "Save the record first ..." instead of risking links to the wrong record.
 * **Names copy**: one copy per record and host column on the page writes the updates one at a time, so they can never
   arrive out of order, and a value the column is known to hold is not written again. Just before each write it reads
-  the saved links (one request) and writes their names; a failed read leaves the column alone and is reported. After
+  the record and its saved links (one request) and writes their names with the record's version (`If-Match`), so a
+  write that would replace newer names is refused and read again; a failed read leaves the column alone and is
+  reported. After
   a link or unlink that failed in a way that may still have saved it, it reads the saved links and writes their names
   too. The update is sent with `keepalive` (bodies up to 60,000 bytes, under the browsers' limit of 64 KiB for such
   requests at a time; a larger one, or one the browser refuses, goes as an ordinary request). While the setting is on,

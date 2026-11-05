@@ -44,7 +44,7 @@ you need:
 * Paths are relative to the root of the repository, for example `control/NToNMultiSelect/index.ts`.
 * Names in *italics* are settings and labels as people see them, for example *Copy names into the host column*.
   **Bold** marks buttons and menu items.
-* The guide describes version 1.0.0 of the control (solution version 1.0.0.0), publisher `KV`, prefix `kv`.
+* The guide describes version 1.0.1 of the control (solution version 1.0.1.0), publisher `KV`, prefix `kv`.
 * The guide exists twice, with the same content: as Markdown, `docs/developer-guide.md`, and as a Word document,
   `docs/NToNMultiSelect - Developer Guide.docx` (also attached to each release).
 
@@ -102,6 +102,7 @@ you need:
   * [4.11 src/strings.ts: the texts](#411-srcstringsts-the-texts)
   * [4.12 src/styles.ts: the look](#412-srcstylests-the-look)
   * [4.13 src/types.ts: shared types](#413-srctypests-shared-types)
+  * [4.14 src/hostField.ts: the host column on the form](#414-srchostfieldts-the-host-column-on-the-form)
 * [5. Key flows step by step](#5-key-flows-step-by-step)
   * [5.1 Opening a record](#51-opening-a-record)
   * [5.2 Opening the list](#52-opening-the-list)
@@ -126,6 +127,13 @@ you need:
   * [5.9 Offline and read-only](#59-offline-and-read-only)
     * [5.9.1 Offline](#591-offline)
     * [5.9.2 Read-only](#592-read-only)
+  * [5.10 A required host column](#510-a-required-host-column)
+    * [5.10.1 What the form checks](#5101-what-the-form-checks)
+    * [5.10.2 New records](#5102-new-records)
+    * [5.10.3 Removing the last value](#5103-removing-the-last-value)
+    * [5.10.4 Copies of the field on one page](#5104-copies-of-the-field-on-one-page)
+    * [5.10.5 What is not covered](#5105-what-is-not-covered)
+    * [5.10.6 Selection on the form](#5106-selection-on-the-form)
 * [6. The view in detail](#6-the-view-in-detail)
   * [6.1 The elements](#61-the-elements)
   * [6.2 Field states](#62-field-states)
@@ -151,7 +159,7 @@ you need:
   * [8.3 The entry point: Execute](#83-the-entry-point-execute)
   * [8.4 The Associate and Disassociate flow](#84-the-associate-and-disassociate-flow)
   * [8.5 Finding the configuration in the published forms](#85-finding-the-configuration-in-the-published-forms)
-  * [8.6 Caches and their 2-minute lifetime](#86-caches-and-their-2-minute-lifetime)
+  * [8.6 Caches: checked every 2 minutes, read in full every 30](#86-caches-checked-every-2-minutes-read-in-full-every-30)
   * [8.7 Copy plans and routes](#87-copy-plans-and-routes)
   * [8.8 The tag protocol with the control](#88-the-tag-protocol-with-the-control)
   * [8.9 Rebuild: writing the names](#89-rebuild-writing-the-names)
@@ -208,6 +216,7 @@ you need:
   * [11.13 Messages, tabs and slow networks](#1113-messages-tabs-and-slow-networks)
   * [11.14 Checking the plug-in with the Plug-in Trace Log](#1114-checking-the-plug-in-with-the-plug-in-trace-log)
   * [11.15 The steps page](#1115-the-steps-page)
+  * [11.16 Selection on the form](#1116-selection-on-the-form)
 * [12. Debugging and troubleshooting](#12-debugging-and-troubleshooting)
   * [12.1 The browser console](#121-the-browser-console)
   * [12.2 The network requests to look at](#122-the-network-requests-to-look-at)
@@ -253,10 +262,11 @@ The solution has five parts:
 | **The steps page** `kv_/NToNMultiSelect/namescopysteps.html` | An HTML web resource for administrators, in the solution with the plug-in. Opened at the environment's address, it creates the plug-in's Delete and Update steps for the **linked tables** only (the tables whose names are copied), and removes them (8.17). | `plugin/steps-page/` | With the plug-in, to follow deletes and renames |
 | **The solution packages** | The zip files an administrator imports. There are two solutions, each built as managed and unmanaged. | `solution/`, `scripts/` | Always |
 
-The control is placed on a text column of the form's table. That column is called the **host column**. The control
-only uses it as an anchor: it never sets its value on the form. With the setting *Copy names into the host column* =
-Yes, the control writes the selected names ("A; B; C") into the host column with a separate update of the record, so
-the names can be shown in views, searched and exported.
+The control is placed on a text column of the form's table. That column is called the **host column**. On the form,
+the control shows the selected names in it, marked never to be saved: the form never saves the column and is never
+made dirty by it, but it checks it, so the column can be required (5.10). With the setting *Copy names into the host
+column* = Yes, the control also writes the selected names ("A; B; C") into the host column of the record, with a
+separate update, so the names can be shown in views, searched and exported.
 
 **Where the control runs.** On model-driven app forms, in the browser and in the Power Apps mobile app (phone and
 tablet). It does not run in canvas apps, custom pages, Power Pages, views or editable grids: it needs the
@@ -264,7 +274,7 @@ model-driven form of a record (5.1, step 2).
 
 ### 1.2 The two solutions
 
-Both solutions have version 1.0.0.0, publisher `KV`, prefix `kv` and choice value prefix 72720, and both contain the
+Both solutions have version 1.0.1.0, publisher `KV`, prefix `kv` and choice value prefix 72720, and both contain the
 same control and form library. Import the one you need into an environment. Each is built twice: as an **unmanaged**
 package, whose components can be changed (for development), and as a **managed** package, whose components are locked
 (for test and production; see 9.6). Two solutions, each managed and unmanaged, make four zip files.
@@ -359,8 +369,9 @@ What each arrow means:
   of the record. The PCF `webAPI` object has no associate or disassociate operations, which is why the control calls
   the Web API directly (see 4.6).
 * **Control → form API.** The control uses the model-driven form API (`Xrm.Page`) to refresh related subgrids, to
-  follow changes made in them (their `OnLoad` event), to hide them, and to wait for the first save of a new record
-  (`OnPostSave`). See 4.9.
+  follow changes made in them (their `OnLoad` event), to hide them, to wait for the first save of a new record
+  (`OnPostSave`), and to show the names in the host column, never submitted (with *Selection on the form* = Event,
+  running its OnChange). See 4.9 and 4.14.
 * **Form library → control.** Only where the platform does not download `bundle.js` itself. See chapter 7.
 * **Web API → plug-in.** Every link made or removed anywhere (the control, subgrids, the other side of the
   relationship, flows, imports, integrations) goes through the **Associate** or **Disassociate** message. Dataverse
@@ -409,6 +420,7 @@ appear once you build.
 | [`control/NToNMultiSelect/src/fetchQuery.ts`](../control/NToNMultiSelect/src/fetchQuery.ts) | Builds the list's FetchXML from *Records from view* and *FetchXML filter*; FetchXML paging |
 | [`control/NToNMultiSelect/src/metadata.ts`](../control/NToNMultiSelect/src/metadata.ts) | Finds the tables, columns and navigation property of the relationship, and the system views; caches them for the page |
 | [`control/NToNMultiSelect/src/formBridge.ts`](../control/NToNMultiSelect/src/formBridge.ts) | Form integration: subgrid refresh, follow and hide; the first save of a new record |
+| [`control/NToNMultiSelect/src/hostField.ts`](../control/NToNMultiSelect/src/hostField.ts) | The host column on the form: shows the names (never submitted), its requirement, its other controls made read-only; with *Selection on the form* = Event, its OnChange |
 | [`control/NToNMultiSelect/src/namesCopy.ts`](../control/NToNMultiSelect/src/namesCopy.ts) | *Copy names into the host column*: the text and the ordered updates of the record |
 | [`control/NToNMultiSelect/src/dataverse.ts`](../control/NToNMultiSelect/src/dataverse.ts) | A small Web API client (timeouts, retries, throttling) and the error messages for users |
 | [`control/NToNMultiSelect/src/strings.ts`](../control/NToNMultiSelect/src/strings.ts) | Every text the control shows, in English and French |
@@ -566,8 +578,8 @@ You need:
 2. A security role that can import solutions and customize forms: **System Administrator** or **System Customizer**.
 3. Two tables with a many-to-many relationship, for example *Project* and *Skill* with the relationship
    `new_project_skill`. Records in both tables.
-4. A text column on the form's table that is **not** Business Required, for example *Project skills*
-   (`new_projectskills`), 4,000 characters long if you will test *Copy names into the host column*.
+4. A text column on the form's table, for example *Project skills* (`new_projectskills`), 4,000 characters long if you
+   will test *Copy names into the host column*. It may be Business Required (5.10); test both.
 
 **The privileges users need** (useful when you set up test users): Read on both tables; Append and Append To to link
 records; Create on the related table for *+ New*; Write on the record for *Copy names into the host column*; and, when
@@ -648,11 +660,11 @@ You have two ways around it:
 
 * **Raise the control version** for every import (the usual way). Change `version` on the `<control>` element of the
   manifest, for example by raising its third number by one. `scripts/build.mjs` stamps the same number into the
-  solution (with `.0` added, as `1.0.0` became `1.0.0.0`) and into the form library, so there is one place to
+  solution (with `.0` added, as `1.0.1` became `1.0.1.0`) and into the form library, so there is one place to
   change.
 * **Remove and re-add the control.** Note each form's settings, remove the control from the forms, delete the
   component from the environment, import, add the control to the forms again, then save and publish them. This is the
-  way to replace a copy that has the same version, for example a build of 1.0.0 over an installed 1.0.0
+  way to replace a copy that has the same version, for example a build of 1.0.1 over an installed 1.0.1
   (see 13.5).
 
 ---
@@ -691,10 +703,10 @@ settings, and the platform reads it to know which file to load and which values 
 
 #### 3.2.1 The control element
 
-`control/NToNMultiSelect/ControlManifest.Input.xml`, the `control` element (about lines 13–15):
+`control/NToNMultiSelect/ControlManifest.Input.xml`, the `control` element (about lines 14–16):
 
 ```xml
-<control namespace="KV" constructor="NToNMultiSelect" version="1.0.0" display-name-key="N:N Multi-Select" description-key="Edits a many-to-many (N:N) relationship with a control that looks and behaves like the native multi-select choice field. Each selection is saved immediately, and related subgrids on the form refresh automatically." control-type="standard">
+<control namespace="KV" constructor="NToNMultiSelect" version="1.0.1" display-name-key="N:N Multi-Select" description-key="Edits a many-to-many (N:N) relationship with a control that looks and behaves like the native multi-select choice field. Each selection is saved immediately, and related subgrids on the form refresh automatically." control-type="standard">
   <external-service-usage enabled="false">
   </external-service-usage>
 ```
@@ -702,14 +714,14 @@ settings, and the platform reads it to know which file to load and which values 
 | Attribute | Value | Why |
 | --- | --- | --- |
 | `namespace` + `constructor` | `KV` + `NToNMultiSelect` | Together they form the control name `KV.NToNMultiSelect`. The class exported from `index.ts` must have the name given in `constructor`. When the solution is packaged, the publisher prefix is added in front: the solution component is named `kv_KV.NToNMultiSelect`. |
-| `version` | `1.0.0` | The control version. `scripts/build.mjs` copies it into the solution version (`1.0.0.0`) and into the form library. Dataverse keeps an installed code component when a solution with the same control version is imported (see 3.8). |
+| `version` | `1.0.1` | The control version. `scripts/build.mjs` copies it into the solution version (`1.0.1.0`) and into the form library. Dataverse keeps an installed code component when a solution with the same control version is imported (see 3.8). |
 | `display-name-key`, `description-key` | literal English text | The control has no `.resx` resource files, so the platform shows these keys as they are. |
 | `control-type` | `standard` | The control renders its own HTML into a `<div>` the platform gives it. (The other type, `virtual`, is for controls that render with the platform's own React and Fluent UI libraries.) |
 | `external-service-usage enabled="false"` | | Declares that the control calls no external service. It only talks to the Dataverse environment it runs in. |
 
 #### 3.2.2 The host column (the bound property)
 
-`control/NToNMultiSelect/ControlManifest.Input.xml`, the type group and the `value` property (about lines 17–23):
+`control/NToNMultiSelect/ControlManifest.Input.xml`, the type group and the `value` property (about lines 18–24):
 
 ```xml
 <type-group name="text">
@@ -718,16 +730,22 @@ settings, and the platform reads it to know which file to load and which values 
   <type>Multiple</type>
 </type-group>
 
-<property name="value" display-name-key="Host column" description-key="Any text column on the form that is not business required. The control uses it only as an anchor and never sets its value on the form, so a required column would block saving. To store the selected names in this column, turn on Copy names into the host column. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column." of-type-group="text" usage="bound" required="true" />
+<property name="value" display-name-key="Host column" description-key="Any text column on the form. The control fills it on the form with the selected names, which the form never saves, so the column can be required (Business required, a business rule, or a required step of a business process flow): saving, or moving to the next stage, is then blocked until something is selected. Other copies of the column on the form become read-only. To store the selected names in this column, turn on Copy names into the host column. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column." of-type-group="text" usage="bound" required="true" />
 ```
 
 `usage="bound"` means the property is connected to a column of the form: the column the maker places the control on.
 The type group lists the column types that are allowed: single line of text, text area and multiple lines of text.
 
 **Why a text column and not the relationship itself?** PCF field controls must be bound to a column. A many-to-many
-relationship is not a column, so the control needs some column to sit on. Any text column works, and the control never
-puts a value into it on the form (see `getOutputs` in 3.4). That is why the description says the column must not be
-business required: a required column that is always empty would block every save.
+relationship is not a column, so the control needs some column to sit on. Any text column works.
+
+**What the control does with the column on the form.** It shows the selected names there (the saved ones, see 5.10),
+through the form's own client API, and marks the column never to be submitted. The form therefore never saves the
+column and is never made dirty by it, but it still checks it like any other column. That is what lets the column be
+required: Business required, required by a business rule, or a required step of a business process flow. The form then
+refuses to save, or to move to the next stage, until something is selected, with its own messages. By default the control
+reports no value through `getOutputs` (3.4.3), and the names reach the record itself only through *Copy names into the
+host column* (5.4); the setting *Selection on the form* can also run the column's OnChange (5.10.6). `src/hostField.ts` (4.14) does all of this, and 5.10 explains the rules for a required column.
 
 #### 3.2.3 The input properties (the settings)
 
@@ -749,6 +767,7 @@ lists every property in the order of the manifest. Appendix A.1 repeats them wit
 | `hideSubgrids` | `Enum` (0 No, 1 Yes) | input | no | `0` (No) | Hide the related subgrids. |
 | `placeholder` | `SingleLine.Text` | input | no | empty ("Select or search options") | Text in the empty search box. |
 | `writeSummary` | `Enum` (0 No, 1 Yes) | input | no | `0` (No) | *Copy names into the host column*. |
+| `formSelection` | `Enum` (0 No, 1 Event) | input | no | `0` (No) | *Selection on the form*: what the form is told about the selection (5.10.6). |
 | `searchMode` | `Enum` (0 Starts with, 1 Contains) | input | no | `0` (Starts with) | How the server search matches names on large tables. |
 | `openOnClick` | `Enum` (0 No, 1 Yes) | input | no | `0` (No) | Open the list on any click in the box. |
 | `openRecords` | `Enum` (0 No, 1 Yes) | input | no | `0` (No) | Selected values are links that open the records. |
@@ -770,7 +789,7 @@ properties offer **Bind to table column** next to the static value.*
 
 #### 3.2.4 Resources
 
-`control/NToNMultiSelect/ControlManifest.Input.xml`, the `resources` element (about lines 82–84):
+`control/NToNMultiSelect/ControlManifest.Input.xml`, the `resources` element (about lines 88–90):
 
 ```xml
 <resources>
@@ -831,13 +850,13 @@ The bound property carries more than its value. The control reads three extra pa
 | Part | Used for | Where |
 | --- | --- | --- |
 | `raw` | The host column text the form loaded with, so the names copy does not write the same text again. | `initialize` (`this.loadedCopy`) |
-| `attributes.LogicalName`, `attributes.MaxLength`, `attributes.RequiredLevel` | The column the names are written to, its maximum length, and a console warning when it is required. | `startCopy`, `linkTag`, `orphanKey`, `warnAboutRequiredHost` |
+| `attributes.LogicalName`, `attributes.MaxLength` | The column the names are written to, and its maximum length. The column's logical name also finds it on the form, where it shows the names (`HostField`, 4.14). | `init`, `startCopy`, `linkTag`, `orphanKey`, `syncHost` |
 | `security.editable` | Column security: `false` when the user may not update the column. The control is then read-only. | `columnLocked` |
 
 All settings are read in one place, `readConfig`. Every read has a fallback, because a setting that was never filled in
 arrives as `null` (or not at all).
 
-`control/NToNMultiSelect/index.ts`, `readConfig` (about lines 437–461):
+`control/NToNMultiSelect/index.ts`, `readConfig` (about lines 489–514):
 
 ```ts
 private readConfig(context: ComponentFramework.Context<IInputs>): Config {
@@ -895,7 +914,7 @@ sequenceDiagram
 
 #### 3.4.1 `init`
 
-`control/NToNMultiSelect/index.ts`, `init` (about lines 344–371):
+`control/NToNMultiSelect/index.ts`, `init` (about lines 390–421):
 
 ```ts
 public init(context: ComponentFramework.Context<IInputs>, _notifyOutputChanged: () => void, _state: ComponentFramework.Dictionary, container: HTMLDivElement): void {
@@ -923,6 +942,10 @@ public init(context: ComponentFramework.Context<IInputs>, _notifyOutputChanged: 
     );
     window.addEventListener("online", this.onOnline);
     liveControls.add(this);
+    // Now, while window.Xrm is that of the control's own form (see HostField).
+    const host = (context.parameters.value as unknown as { attributes?: { LogicalName?: string } })?.attributes?.LogicalName;
+    const table = (this.contextInfo(context).entityTypeName ?? "").toLowerCase();
+    this.hostField = host && table ? new HostField(currentPage(), table, host) : null;
     this.applyConfig(context);
     this.render();
 }
@@ -934,19 +957,23 @@ What happens, in order:
 2. The view is created in the `container` the platform provides. The view gets **callbacks** instead of a reference to
    the controller: it can only report what the user did, never reach into the controller's state.
 3. The control listens for the browser's `online` event, to try again after a connection loss.
-4. `applyConfig` reads the settings. On the first call it always starts `initialize`, which is asynchronous (it reads
+4. A `HostField` (4.14) is made for the host column on the control's own form. It must be made here, at once: the app
+   gives each dialog and quick create form a `window.Xrm` of its own while it is on top, so only now is `window.Xrm`
+   sure to be the one of the form the control sits on.
+5. `applyConfig` reads the settings. On the first call it always starts `initialize`, which is asynchronous (it reads
    metadata and the saved links, see 5.1). `init` itself returns at once.
-5. The first `render` shows an empty, busy field until the data arrives.
+6. The first `render` shows an empty, busy field until the data arrives.
 
 `init` does not use `notifyOutputChanged` or `state` (hence the leading underscores). The control never reports a
-value to the form, and it keeps no state between sessions.
+value to the form through the platform (it shows the names in the host column itself, see 3.2.2), and it keeps no
+state between sessions.
 
 #### 3.4.2 `updateView`
 
 The platform calls `updateView` whenever something in the context changes: a property value, the form's read-only
 state, the offline state, the label. The control uses it for three jobs.
 
-`control/NToNMultiSelect/index.ts`, `updateView` (about lines 373–412, shortened):
+`control/NToNMultiSelect/index.ts`, `updateView` (about lines 423–462, shortened):
 
 ```ts
 public updateView(context: ComponentFramework.Context<IInputs>): void {
@@ -991,24 +1018,28 @@ public updateView(context: ComponentFramework.Context<IInputs>): void {
 
 #### 3.4.3 `getOutputs`
 
-`control/NToNMultiSelect/index.ts`, `getOutputs` (about lines 414–418):
+`control/NToNMultiSelect/index.ts`, `getOutputs` (about lines 464–469):
 
 ```ts
 public getOutputs(): IOutputs {
-    // The host column is only an anchor, so the form never gets a value from this control and is never made
-    // dirty by it. "Copy names into the host column" writes to the record itself (see updateSummary).
+    // The form never gets a value to save from this control, so it is never made dirty by it: the picks are shown in
+    // the host column through the form's own API, never to be saved (see syncHost), and "Copy names into the host
+    // column" writes to the record itself (see updateSummary).
     return {};
 }
 ```
 
 **Why the control never outputs a value.** Each pick is saved to the server at once, as a link. If the control also
-gave the form a value, the form would become "dirty" (unsaved), the user would be asked to save, and a required field
-elsewhere on the form could block that save. Returning `{}` keeps the form clean. The names copy, when it is on, is
-written with a separate update of the record (see 5.4), not through the form.
+gave the form a value through `getOutputs`, the form would become "dirty" (unsaved), the user would be asked to save,
+and a required field elsewhere on the form could block that save. The form's save would also be a second writer on
+the column (5.10.6). Returning `{}` keeps the form clean. The names are
+still shown in the host column on the form, but through the form's client API with the column's submit mode set to
+`never` (`syncHost`, 5.10): the form checks the value (a required column needs one) and never saves it. The names
+copy, when it is on, is written with a separate update of the record (see 5.4), not through the form.
 
 #### 3.4.4 `destroy`
 
-`control/NToNMultiSelect/index.ts`, `destroy` (about lines 420–433):
+`control/NToNMultiSelect/index.ts`, `destroy` (about lines 471–485):
 
 ```ts
 public destroy(): void {
@@ -1024,13 +1055,16 @@ public destroy(): void {
     liveControls.delete(this);
     this.view.destroy();
     this.retireEngine();
+    this.hostField?.dispose();
 }
 ```
 
 The platform calls `destroy` when the form closes, when the user moves to another record, or when a business rule
 hides the field. Increasing `initToken` makes every asynchronous step that is still running drop its result (see the
 token pattern in 4.2). `retireEngine` decides what happens to writes that are still queued: they are **not** cancelled
-(see 5.8).
+(see 5.8). It also hands a removal held back on a required field to another copy of the field on the page, if there is
+one (5.10). `hostField.dispose` gives back a requirement the control lifted (5.10) and stops following the business
+process flow's stage changes and, with *Selection on the form* = Event, the column's OnChange (4.14).
 
 ### 3.5 The context objects the control uses
 
@@ -1059,6 +1093,7 @@ mostly with `try`/`catch`, so the control keeps working where `Xrm` is missing):
 | Global API | Where | What for |
 | --- | --- | --- |
 | `Xrm.Page` (the page form) | `src/formBridge.ts` | Subgrids (refresh, hide, OnLoad), the save events of a new record. PCF gives a field control no access to other controls on the form. |
+| `Xrm.Page.getAttribute(<host column>)` of the control's own form | `src/hostField.ts` | The host column on the form: its value (the names, `setValue`), its submit mode (`never`), its required level (read, and lifted while picks can't be held), its other controls (made read-only), with *Selection on the form* = Event its OnChange (`fireOnChange`, and `addOnChange`/`removeOnChange` to note what each OnChange saw), and the business process flow's stage events (4.14). |
 | `Xrm.App.addGlobalNotification` | `notifyApp` in `index.ts` | A message that stays visible after the form is gone (writes that failed after the record was closed). |
 | `Xrm.Navigation.openAlertDialog` | `notifyApp` | Fallback when app notifications are not available. |
 | `Xrm.Utility.getGlobalContext().getClientUrl()` / `.getCurrentAppUrl()` | `clientUrl`, `recordPageBase` | Fallbacks for the environment URL and the app address. |
@@ -1069,10 +1104,10 @@ The whole style sheet is a string constant in `src/styles.ts`. The view calls `e
 first instance on the page adds a `<style>` element to the document head, and every later instance finds it by id and
 does nothing.
 
-`control/NToNMultiSelect/src/styles.ts`, `ensureStyles` (about lines 116–126):
+`control/NToNMultiSelect/src/styles.ts`, `ensureStyles` (about lines 117–127):
 
 ```ts
-const STYLE_ID = "ntnms-styles-v8";
+const STYLE_ID = "ntnms-styles-v9";
 
 export function ensureStyles(doc: Document = document): void {
     if (doc.getElementById(STYLE_ID)) {
@@ -1114,7 +1149,7 @@ export function ensureStyles(doc: Document = document): void {
 3. The control registers itself as well, at the end of `index.ts`. This makes the constructor available as
    `window.KV.NToNMultiSelect` in every case, which is what the form library checks (chapter 7).
 
-   `control/NToNMultiSelect/index.ts`, `registerGlobally` (about lines 1587–1599):
+   `control/NToNMultiSelect/index.ts`, `registerGlobally` (about lines 1965–1977):
 
    ```ts
    (function registerGlobally(): void {
@@ -1170,7 +1205,7 @@ Recipe 10.4 walks through these steps with a complete example.
 
 ### 4.1 Module map
 
-The control is one TypeScript class (`index.ts`) and eleven small modules in `src/`. No UI framework and no runtime
+The control is one TypeScript class (`index.ts`) and twelve small modules in `src/`. No UI framework and no runtime
 library is used: apart from the small wrapper webpack adds, the compiled bundle contains only this code.
 
 ```mermaid
@@ -1181,6 +1216,7 @@ flowchart TD
     Index --> Related["src/relatedData.ts<br/>RelatedData"]
     Index --> Meta["src/metadata.ts<br/>resolveRelationship"]
     Index --> Bridge["src/formBridge.ts<br/>FormBridge"]
+    Index --> Host["src/hostField.ts<br/>HostField"]
     Index --> Names["src/namesCopy.ts<br/>NamesCopy"]
     Index --> Strings["src/strings.ts<br/>texts"]
     Index --> Client["src/dataverse.ts<br/>DataverseClient"]
@@ -1190,7 +1226,8 @@ flowchart TD
     Related --> Client
     Meta --> Client
     Client --> API[("Dataverse Web API")]
-    Bridge --> Xrm["Xrm form API<br/>subgrids and save events"]
+    Bridge --> Xrm["Xrm form API<br/>subgrids, save events,<br/>the host column"]
+    Host --> Xrm
 ```
 
 `src/types.ts` (shared types) is used by almost every module and is left out of the picture.
@@ -1205,6 +1242,7 @@ flowchart TD
 | `src/fetchQuery.ts` | Builds the list's FetchXML from a view or the FetchXML setting | XML only |
 | `src/metadata.ts` | Finds tables, columns, navigation properties and views from names | the Web API client |
 | `src/formBridge.ts` | Talks to the surrounding form: subgrids, save events | `Xrm.Page` |
+| `src/hostField.ts` | The host column on the control's own form: the names shown, never submitted; its requirement; its other controls; with *Selection on the form* = Event, its OnChange | that form's `Xrm.Page` |
 | `src/namesCopy.ts` | Keeps the host column copy of the names in order | a writer interface, no HTTP |
 | `src/strings.ts` | Every text the user can see, in English and French | nothing |
 | `src/styles.ts` | The CSS and the icon glyphs | nothing |
@@ -1238,10 +1276,11 @@ control on the page.
 | --- | --- | --- |
 | Configuration | `config`, `relationshipKey`, `optionsKey`, `subgridsKey` | The keys detect which settings changed (see `applyConfig`). |
 | Working parts | `rel`, `data`, `engine`, `bridge` | Created by `initialize` for one record. `hiddenGrids` is created once with the instance and handed to every bridge, so the grids it hid are remembered across restarts (5.5.3). |
+| Host column | `hostField`, `hostSyncedFor`, `hostText`, `hostIds` | The column on the control's own form (made once, in `init`, 4.14), and what `syncHost` last worked out for it: the record, its names and their records (5.10.6). |
 | The list | `mode`, `allOptions`, `allOptionsKeys`, `baseOptions`, `baseNext`, `shownOptions`, `shownNext`, `shownPageSize`, `optionsStatus`, `optionsError`, `loadingMore`, `loadMoreError`, `searchTerm`, `optionsPromise`, `searchTimer`, `searchAbort` | See 5.2. |
 | Feedback | `error`, `batchErrors`, `batchFirstError`, `batchUnknown`, `fatalError`, `saveFirst`, `offline`, `selectedLoaded`, ... | Messages, hints and the reasons the field cannot be edited. `batchUnknown`: a write of the current batch failed in a way that may still have saved it (5.3). |
 | Names copy | `loadedCopy`, `copy` | See 5.4. |
-| Render cache | `renderedVersion`, `renderedRecordId`, `cachedSelected`, `cachedPending`, `cachedHeld`, `cachedOccupied` | The sorted selection, the records that hold a place toward *Maximum selections* without being selected, and the number of places taken (5.3) are only worked out again when the engine's `version` changed. |
+| Render cache | `renderedVersion`, `renderedRecordId`, `cachedSelected`, `cachedSaved`, `cachedPending`, `cachedHeld`, `cachedOccupied` | The sorted selection, the part of it that is saved (`savedSelected`, for `syncHost`), the records that hold a place toward *Maximum selections* without being selected, and the number of places taken (5.3) are only worked out again when the engine's `version` changed. |
 | Tokens | `initToken`, `optionsToken`, `searchToken` | See below. |
 
 #### 4.2.1 The token pattern
@@ -1251,7 +1290,7 @@ moved to another record, changed a setting or typed more text. The controller pr
 counter is read before the request and compared after it. If the counter changed in the meantime, the answer is
 dropped.
 
-`control/NToNMultiSelect/index.ts`, `serverSearch` (about lines 1441–1455, shortened):
+`control/NToNMultiSelect/index.ts`, `serverSearch` (about lines 1730–1744, shortened):
 
 ```ts
 private async serverSearch(term: string): Promise<void> {
@@ -1277,7 +1316,7 @@ When you add asynchronous code to the controller, follow the same pattern: captu
 
 #### 4.2.2 Reacting to setting changes: `applyConfig`
 
-`control/NToNMultiSelect/index.ts`, `applyConfig` (about lines 463–488):
+`control/NToNMultiSelect/index.ts`, `applyConfig` (about lines 516–541):
 
 ```ts
 private applyConfig(context: ComponentFramework.Context<IInputs>): void {
@@ -1316,13 +1355,17 @@ only affect the look (placeholder, *Open list on click*, ...) need nothing: the 
 
 `render` is the only place that calls `view.render`. It is cheap and is called after every change.
 
-`control/NToNMultiSelect/index.ts`, `render` (about lines 1507–1573, shortened):
+`control/NToNMultiSelect/index.ts`, `render` (about lines 1792–1868, shortened):
 
 ```ts
+if (this.destroyed || !this.view) return;
+this.releaseHeldBack();
+// ...
 if (engine.version !== this.renderedVersion || recordId !== this.renderedRecordId) {
     this.renderedVersion = engine.version;
     this.renderedRecordId = recordId;
     this.cachedSelected = engine.selected();
+    this.cachedSaved = recordId ? engine.savedSelected() : [];
     // Show the "saving" look only for real writes, not for values waiting for a new record's first save.
     this.cachedPending = recordId ? engine.pendingIds() : new Set<string>();
     this.cachedHeld = engine.placeHolders();
@@ -1330,8 +1373,10 @@ if (engine.version !== this.renderedVersion || recordId !== this.renderedRecordI
 }
 // ...
 const max = config?.maxSelections ?? 0;
-// Records whose removal is still on its way count until it succeeded (see SyncEngine.occupiedCount).
-const maxReached = max > 0 && this.cachedOccupied >= max;
+// Records whose removal is still on its way count until it succeeded (see SyncEngine.occupiedCount); a value
+// whose removal is held back gives its place to the pick that replaces it (see holdBackLast).
+const occupied = this.cachedOccupied - this.heldCount();
+const maxReached = max > 0 && occupied >= max;
 
 // Select all only appears when every matching row is loaded, the setting allows it, the list is within the
 // limit (0 = as many as one load holds, 500) and selecting them all stays within Maximum selections.
@@ -1340,13 +1385,13 @@ const limit = config && config.selectAllLimit > 0 ? config.selectAllLimit : CLIE
 let canSelectAll = allLoaded && !!config?.showSelectAll && this.shownOptions.length > 0 && this.shownOptions.length <= limit;
 if (canSelectAll && max > 0 && engine) {
     const extra = this.shownOptions.filter((i) => !engine.occupies(i.id)).length;
-    canSelectAll = this.cachedOccupied + extra <= max;
+    canSelectAll = occupied + extra <= max;
 }
 // ...
 const canCreate = !!config?.allowCreate && !!this.rel?.targetQuickCreate && !maxReached;
 // ...
 this.view.render({
-    selected: this.cachedSelected,
+    selected: this.shown(this.cachedSelected),
     pending: this.cachedPending,
     held: this.cachedHeld,
     options: this.shownOptions,
@@ -1362,22 +1407,29 @@ this.view.render({
     openRecords,
     interceptLinks: openRecords && this.opensRecordsInApp(),
 });
+this.syncHost();
 ```
 
 All the rules about **what** the field shows (is *Select all* allowed? is the field read-only? which hint?) live here,
 in one function. The view decides only **how** it is shown.
 
 *Maximum selections* counts **places**, not only the selected records: `maxReached`, *Select all* and *+ New* use
-`cachedOccupied`, the selected records plus the records that hold a place without being selected
-(`SyncEngine.placeHolders`, 4.4), and `held` tells the view which of the rows that are not selected can still be
-picked at the limit (5.3).
+`occupied`, the selected records plus the records that hold a place without being selected
+(`SyncEngine.placeHolders`, 4.4), less the values whose removal is held back on a required field, which give their
+place to the pick that replaces them (`heldCount`, 5.10). `held` tells the view which of the rows that are not
+selected can still be picked at the limit (5.3).
+
+Three more steps belong to a required host column (5.10): `render` first lets `releaseHeldBack` send removals that were
+held back and may go now; the view gets the selection without the values whose removal is held back (`shown`); and at
+the end `syncHost` puts the saved names into the host column on the form.
 
 #### 4.2.4 The functions, by job
 
 | Job | Functions |
 | --- | --- |
-| Start-up and reading links | `readConfig`, `applyConfig`, `contextInfo`, `recordIdFrom`, `clientUrl`, `recordKey`, `initialize`, `retryInitialize`, `warmOptions`, `warnAboutRequiredHost`, `loadSelected`, `retryInitialLoad`, `scheduleResync`, `firstLoadDone` |
-| Engines and records | `retireEngine`, `orphanKey`, `releaseAbandonedOrphan`, `adoptOrphan`, `peersIdle`, `onRecordSaved`, `onWriteError`, `onSettled`, `finishDetached`, `resyncPeers` |
+| Start-up and reading links | `readConfig`, `applyConfig`, `contextInfo`, `recordIdFrom`, `clientUrl`, `recordKey`, `initialize`, `retryInitialize`, `warmOptions`, `loadSelected`, `retryInitialLoad`, `scheduleResync`, `firstLoadDone` |
+| Engines and records | `retireEngine`, `orphanKey`, `releaseAbandonedOrphan`, `adoptOrphan`, `peersIdle`, `onRecordSaved`, `onWriteError`, `onSettled`, `finishDetached`, `resyncPeers`, `markPeersStale` |
+| A required host column (5.10) | `holdBackLast`, `checksPending`, `survivors`, `takeBack`, `releaseHeldBack`, `handOverHeld`, `heldHere`, `heldCount`, `shown`, `recordPeers`, `renderPeers`, `unsavedPeers`, `syncHost`, `picksOnUnsavedForm` |
 | Subgrids | `onSubgridLoad`, `scheduleSubgridRefresh`, `applyHideSubgrids` |
 | Names copy | `updateSummary`, `linkTag`, `startCopy`, `showSaved`, `onCopyFailed` |
 | User actions | `onToggle`, `createRecord`, `recordPageBase`, `recordUrl`, `opensRecordsInApp`, `openRecord`, `readOnly`, `columnLocked`, `canEdit` |
@@ -1402,8 +1454,9 @@ Chapter 5 walks through these functions flow by flow.
   the record first, then pick values here." instead of holding picks.
 * **No background loading of the list**: `warmOptions` loads the list 50 ms after start-up so that the first opening is
   instant. Remove its call in `initialize` and `retryInitialLoad` to load the list only when it is first opened.
-* **Giving the form a value** is possible (return it from `getOutputs` and call `notifyOutputChanged`), but every pick
-  would then make the form dirty. Read 3.4.3 first.
+* **Giving the form a value to save** is possible (return it from `getOutputs` and call `notifyOutputChanged`), but
+  every change would then make the form dirty, and its save would write over names the names copy wrote since. Read
+  3.4.3 and 5.10.6 first.
 
 ### 4.3 `src/view.ts`: the view
 
@@ -1491,17 +1544,19 @@ to every form, and its styles could clash with the platform's.
 **How it stays fast with thousands of values.** `render` compares the new state with the previous one and only redoes
 what changed:
 
-* The chips are rebuilt only when the `selected` array is a different array (the sync engine returns the same array
-  until the selection changes), or when the read-only state or *Open selected records* changed. When only the "saving"
-  state changed, `updateChipStates` toggles a class.
+* The chips are redrawn only when the `selected` array is a different array (the sync engine returns the same array
+  until the selection changes), or when the read-only state or *Open selected records* changed. Even then, a chip is
+  kept while its record stays shown with the same name and link (`chipElements`, by record id): only the chips of
+  records added or removed are built or taken away (`buildChip`), and the others are only moved when they are out of
+  place. When only the "saving" state changed, `updateChipStates` toggles a class.
 * At most `MAX_COLLAPSED_CHIPS` (50) chips are built while the field is collapsed.
 * The list rows are rebuilt only when the `options` array changed; a "load more" only appends rows. Otherwise
   `refreshRows` redraws just the rows whose selected, saving, held, visited or highlight state changed (see 6.5).
 
 **Typical customizations.**
 
-* **Look**: change the CSS in `src/styles.ts` (4.12). If you change the row height, update `LIST_MAX_HEIGHT` and
-  `MENU_MAX_HEIGHT` at the top of `view.ts`, which the positioning uses.
+* **Look**: change the CSS in `src/styles.ts` (4.12). If you change the row height, update `ROW_HEIGHT`,
+  `LIST_MAX_HEIGHT` and `MENU_MAX_HEIGHT` at the top of `view.ts`, which the positioning uses.
 * **A second line in each row** (for example a code under the name): add a field to `Item` (4.13), select the column
   in `RelatedData` (4.5), and add an element in `rebuildRows` next to `ntnms-option-text`.
 * **Different keyboard behaviour**: `onKeyDown` (search box), `onChipKey` and `onChipsListKey` (values). Chapter 6.4
@@ -1513,7 +1568,7 @@ what changed:
 
 **Purpose.** `SyncEngine` keeps the links on the server in line with what the user picked, for one record.
 
-`control/NToNMultiSelect/src/syncEngine.ts` (about lines 23–45, shortened):
+`control/NToNMultiSelect/src/syncEngine.ts` (about lines 23–48, shortened):
 
 ```ts
 /**
@@ -1527,7 +1582,8 @@ what changed:
 export class SyncEngine {
     private confirmed = new Map<string, Item>();
     private desired = new Map<string, Item>();
-    private inFlight = new Set<string>();
+    /** Writes on their way, by record: whether each adds or removes the link. */
+    private inFlight = new Map<string, "add" | "remove">();
     /** Adds that failed in a way that may still have saved them, until the next read of the saved links. */
     private uncertain = new Set<string>();
     private recordId: string | null = null;
@@ -1547,7 +1603,7 @@ are read again (see below).
 A click only changes **desired**. A worker (`pump`) then looks for differences and sends requests for them, at most
 `MAX_PARALLEL` (4) at a time and never two for the same record.
 
-`control/NToNMultiSelect/src/syncEngine.ts`, `pump` (about lines 231–249):
+`control/NToNMultiSelect/src/syncEngine.ts`, `pump` (about lines 265–283):
 
 ```ts
 private pump(): void {
@@ -1577,11 +1633,11 @@ called after the first save (see 5.6).
 Each request runs in `run`. On success the record moves into **confirmed**. On failure it is **rolled back**: desired
 goes back to the saved state, so the field never shows a link that is not stored.
 
-`control/NToNMultiSelect/src/syncEngine.ts`, `run` (about lines 265–294):
+`control/NToNMultiSelect/src/syncEngine.ts`, `run` (about lines 299–330):
 
 ```ts
 private async run(item: Item, operation: "add" | "remove", recordId: string): Promise<void> {
-    this.inFlight.add(item.id);
+    this.inFlight.set(item.id, operation);
     try {
         if (operation === "add") {
             await this.executor.associate(recordId, item.id);
@@ -1591,6 +1647,7 @@ private async run(item: Item, operation: "add" | "remove", recordId: string): Pr
             await this.executor.disassociate(recordId, item.id);
             this.confirmed.delete(item.id);
         }
+        this.uncertainRemovals.delete(item.id);
         this.changedInBatch = true;
     } catch (error) {
         if (this.disposed) {
@@ -1603,8 +1660,9 @@ private async run(item: Item, operation: "add" | "remove", recordId: string): Pr
             this.desired.set(item.id, this.confirmed.get(item.id) ?? item);
         }
         this.sortedCache = null;
-        if (this.callbacks.onError(item, operation, error) === true && operation === "add") {
-            this.uncertain.add(item.id);
+        // A write that may have been saved all the same is settled only by a read of the saved links.
+        if (this.callbacks.onError(item, operation, error) === true) {
+            (operation === "add" ? this.uncertain : this.uncertainRemovals).add(item.id);
         }
     } finally {
         this.inFlight.delete(item.id);
@@ -1614,9 +1672,11 @@ private async run(item: Item, operation: "add" | "remove", recordId: string): Pr
 
 `onError` (the controller's `onWriteError`, 5.3) returns `true` when the failed write may have been saved all the same:
 the connection dropped, the request timed out, or a gateway or server error answered (`mayHaveSaved` in `index.ts`).
-A failed add is then kept in **uncertain**. The field still shows the value as not selected, but the engine cannot
-know whether the link exists until it reads the saved links again: `setConfirmed` empties **uncertain**, and an add of
-the same record that succeeds takes it out.
+A failed add is then kept in **uncertain**, and a failed removal in **uncertainRemovals**. The field shows the value
+as it was before (not selected after a failed add, selected after a failed removal), but the engine cannot know
+whether the link exists until it reads the saved links again: `setConfirmed` empties both sets, and a later write of
+the same record that succeeds takes it out. **inFlight** records, for each write on its way, whether it adds or
+removes the link: `savedSelected` and `removals` need to know (see below).
 
 When nothing is left in flight, `finishBatch` calls `onSettled(changed)` once for the whole burst of clicks.
 
@@ -1638,7 +1698,7 @@ more than the selected records. `placeHolders()` returns the records that take a
 takes a place (selected, or one of the above). The controller uses them for the limit (5.3); `hasUncertain()` tells it
 that a place is held that only a read of the saved links can free (5.5.2).
 
-`control/NToNMultiSelect/src/syncEngine.ts`, `occupies` and `placeHolders` (about lines 95–120):
+`control/NToNMultiSelect/src/syncEngine.ts`, `occupies` and `placeHolders` (about lines 99–124):
 
 ```ts
 /**
@@ -1659,7 +1719,7 @@ public placeHolders(): Set<string> {
     for (const id of this.confirmed.keys()) {
         if (!this.desired.has(id)) ids.add(id);
     }
-    for (const id of this.inFlight) {
+    for (const id of this.inFlight.keys()) {
         if (!this.desired.has(id)) ids.add(id);
     }
     for (const id of this.uncertain) {
@@ -1671,17 +1731,61 @@ public placeHolders(): Set<string> {
 
 The controller works them out once per engine `version` (4.2.3), not on every drawing.
 
+**What is saved, and what is being removed.** Two more views of the state serve a required host column (5.10):
+
+* `savedSelected()` is the selection the server is known to keep: selected records that are confirmed, leaving out a
+  pick still on its way, a record picked again while its removal is on its way (the removal goes through first, then
+  the record is linked again), and a record whose removal failed in a way that may still have taken the link away. The
+  host column on a saved record's form shows these names (with *Selection on the form* = Event, the selection once
+  nothing is being written, 5.10.6), so a required column is never satisfied by a pick that may still fail.
+* `removals()` is every link the engine is taking away: removals waiting, on their way (**inFlight** with `"remove"`),
+  or of unknown outcome (**uncertainRemovals**). Before letting a removal leave a required field empty, the controller
+  counts what survives the removals of every copy of the field on the page.
+
+`control/NToNMultiSelect/src/syncEngine.ts`, `savedSelected`, `isConfirmed` and `removals` (about lines 147–172):
+
+```ts
+/**
+ * The selected records known to stay saved. Left out: picks still on their way or waiting for a new record's first
+ * save, a record picked again while its removal is on its way (the removal goes through first, then the record is
+ * linked again), and one whose removal failed in a way that may still have taken the link away. Sorted by name, like
+ * selected().
+ */
+public savedSelected(): Item[] {
+    return this.selected().filter((item) => this.confirmed.has(item.id) && this.inFlight.get(item.id) !== "remove" && !this.uncertainRemovals.has(item.id));
+}
+
+/** Whether the server has answered that `id` is linked (see savedSelected for whether it stays so). */
+public isConfirmed(id: string): boolean {
+    return this.confirmed.has(id);
+}
+
+/** Records whose link this engine is taking away: removals waiting, on their way, or of unknown outcome. */
+public removals(): Set<string> {
+    const ids = new Set(this.uncertainRemovals);
+    for (const id of this.confirmed.keys()) {
+        if (!this.desired.has(id)) ids.add(id);
+    }
+    for (const [id, operation] of this.inFlight) {
+        if (operation === "remove") ids.add(id);
+    }
+    return ids;
+}
+```
+
 **Public API.**
 
 | Member | Does |
 | --- | --- |
 | `setRecordId(id)` / `getRecordId()` | Sets the record the links belong to (starts the worker). |
-| `setConfirmed(items)` | Loads the saved links from the server, keeping local changes that are not written yet. Empties **uncertain**. |
+| `setConfirmed(items)` | Loads the saved links from the server, keeping local changes that are not written yet. Empties **uncertain** and **uncertainRemovals**. |
 | `set(item, selected)`, `setMany(items, selected)` | The user's picks. |
 | `selected()` | The desired selection, sorted by name. Returns the same array until the selection changes. |
 | `isSelected(id)`, `selectedCount()` | Queries on the desired selection. |
 | `occupies(id)`, `placeHolders()`, `occupiedCount()` | The places taken toward *Maximum selections* (see above). |
-| `hasUncertain()` | Whether an add whose outcome is not known still holds a place. |
+| `hasUncertain()` | Whether a write whose outcome is not known waits for a read of the saved links: an add that may hold a place, or a removal that may have taken the link away. |
+| `savedSelected()`, `isConfirmed(id)` | The selected records known to stay saved, and whether the server has answered that a record is linked (see above). |
+| `removals()` | The links the engine is taking away (see above). |
 | `pendingIds()`, `hasPendingChanges()`, `isBusy()` | What still differs from the server, and whether requests are in flight. |
 | `cancelQueued()` | Drops changes not yet sent (used when every further request would fail the same way). |
 | `whenIdle()` | A promise that resolves when the current batch is done. |
@@ -1716,15 +1820,16 @@ export const SERVER_PAGE_SIZE = 100;
 
 | Function | Request | Used for |
 | --- | --- | --- |
-| `loadSelected(recordId)` | `GET <set>(<id>)/<navigation>?$select=...&$orderby=...`, all pages | The saved links (record open, re-reads, names copy). |
+| `loadSelected(recordId)` | `GET <set>(<id>)/<navigation>?$select=...&$orderby=...`, all pages | The saved links (record open, re-reads). |
+| `readHostAndLinks(recordId, column)` | `GET <set>(<id>)?$select=<column>&$expand=<navigation>(...)`, with `If-None-Match: null`; further pages of links if there are more than one page holds | The names copy: the host column as saved, the record's version (its ETag) and the saved links, in one request (5.4.3). |
 | `loadOptions(query, term, pageSize, nextLink)` | OData or FetchXML `GET` on the related table | One page of the list. |
 | `isOffered(query, id)` | The list query narrowed to one id | Is a record made with *+ New* offered by the list? |
 | `associate(recordId, targetId, tag?)` | `POST <set>(<id>)/<navigation>/$ref` | Make a link. |
 | `disassociate(recordId, targetId, tag?)` | `DELETE <set>(<id>)/<navigation>(<target>)/$ref` | Remove a link. |
-| `updateRecord(recordId, column, value)` | `PATCH <set>(<id>)` with `If-Match: *`, sent with `keepalive` (4.6) | The names copy. |
+| `updateRecord(recordId, column, value, version)` | `PATCH <set>(<id>)` with `If-Match: <version>` (the ETag `readHostAndLinks` returned; `*` without one), sent with `keepalive` (4.6) | The names copy. Dataverse refuses it (412) when the record changed after the read. |
 | `optionsPath(query, term)` | (builds the OData path) | Used by `loadOptions`. |
 
-**Reading the saved links.** `control/NToNMultiSelect/src/relatedData.ts`, `loadSelected` (about lines 76–84):
+**Reading the saved links.** `control/NToNMultiSelect/src/relatedData.ts`, `loadSelected` (about lines 83–91):
 
 ```ts
 public async loadSelected(recordId: string, signal?: AbortSignal): Promise<Item[]> {
@@ -1741,7 +1846,7 @@ public async loadSelected(recordId: string, signal?: AbortSignal): Promise<Item[
 The saved links are read **without** the list's filters: a linked record that is now inactive, or outside the view,
 still shows as selected. Only the list of records that can be **picked** is filtered.
 
-**Making a link, and why a "duplicate" error is checked.** `control/NToNMultiSelect/src/relatedData.ts`, `associate` (about lines 212–225):
+**Making a link, and why a "duplicate" error is checked.** `control/NToNMultiSelect/src/relatedData.ts`, `associate` (about lines 219–232):
 
 ```ts
 public async associate(recordId: string, targetId: string, tag?: string): Promise<void> {
@@ -1769,7 +1874,7 @@ spirit, `disassociate` treats "not found" as done.
 optional names copy plug-in uses it to skip the column the control writes itself, when the user may write that column
 (see 5.4.5 and 8.8).
 
-`control/NToNMultiSelect/src/relatedData.ts`, `linkTag` and `tagQuery` (about lines 54–61):
+`control/NToNMultiSelect/src/relatedData.ts`, `linkTag` and `tagQuery` (about lines 57–64):
 
 ```ts
 export function linkTag(rel: RelationshipInfo, recordId: string, hostColumn: string): string {
@@ -1782,7 +1887,7 @@ function tagQuery(tag?: string): string {
 }
 ```
 
-**The OData list query, with every filter the settings can add.** `control/NToNMultiSelect/src/relatedData.ts`, `optionsFilters` (about lines 175–193):
+**The OData list query, with every filter the settings can add.** `control/NToNMultiSelect/src/relatedData.ts`, `optionsFilters` (about lines 182–200):
 
 ```ts
 private optionsFilters(query: OptionsQuery, searchTerm: string): string[] {
@@ -1834,7 +1939,7 @@ When *Records from view* or *FetchXML filter* is set, `loadOptions` goes to `loa
 **Purpose.** A small client for the Dataverse Web API with one policy for every request: retries, timeouts, throttling,
 cancellation and error wording.
 
-`control/NToNMultiSelect/src/dataverse.ts`, `DataverseClient` (about lines 123–131):
+`control/NToNMultiSelect/src/dataverse.ts`, `DataverseClient` (about lines 128–136):
 
 ```ts
 export class DataverseClient {
@@ -1864,7 +1969,7 @@ still reaches the record when the user closes the tab. Browsers take at most 64 
 time, so `send` only asks for it up to `KEEPALIVE_MAX_BYTES` (60,000 bytes); a larger body is sent as an ordinary
 request.
 
-`control/NToNMultiSelect/src/dataverse.ts`, `send` (about lines 164–181):
+`control/NToNMultiSelect/src/dataverse.ts`, `send` (about lines 172–189):
 
 ```ts
 public async send(
@@ -1915,7 +2020,7 @@ The resend counts as one of the retries and waits as they do (see the table belo
 | Write timed out (130 seconds) | **Not** sent again: it may still finish on the server. Reported as failed; the controller reads the links again. |
 | Any other error | Thrown at once as a `DataverseError` with the HTTP status, the Dataverse error code and message. |
 
-`control/NToNMultiSelect/src/dataverse.ts`, `request` (about lines 226–233):
+`control/NToNMultiSelect/src/dataverse.ts`, `request` (about lines 234–241):
 
 ```ts
 let delay = BACKOFF_MS[attempt] + Math.floor(Math.random() * 250);
@@ -2145,7 +2250,7 @@ form, add its selector to `OVERLAY`. To sync other controls than subgrids, exten
 
 **Purpose.** Implements *Copy names into the host column*: the text, and the order in which updates are written.
 
-**The text.** `control/NToNMultiSelect/src/namesCopy.ts`, `namesText` (about lines 3–19):
+**The text.** `control/NToNMultiSelect/src/namesCopy.ts`, `namesText` (about lines 5–21):
 
 ```ts
 /** How the names are joined in the host column, e.g. "API design; Automation". */
@@ -2171,30 +2276,37 @@ export function namesText(selected: Item[], maxLength?: number): string | null {
 that record share it (`namesCopyFor`), so their updates go **one at a time**, and a newer value waits for the one on its
 way. It remembers what the column holds (`saved`) and skips a write that would not change anything, so opening a
 record never writes to it. It has two entry points. `update(selected, writer)` runs once the page's links are saved:
-when the names of `selected` differ from what the column holds, or a write is on its way, it reads the links saved on
-the server and writes their names, unless the column already holds them (5.4.3). `refresh(writer)` does the same even
+when the names of `selected` differ from what the column holds, or a write is on its way, it reads the record and the
+links saved on the server in one request and writes their names, unless the column already holds them (5.4.3). `refresh(writer)` does the same even
 when the page's names have not changed; the controller calls it after a link write whose outcome is not known (5.4.1).
 
 **`CopyWriter`** is how the copy reaches the server. The controller provides it (`startCopy` in `index.ts`).
 
-`control/NToNMultiSelect/src/namesCopy.ts`, `CopyWriter` (about lines 26–37):
+`control/NToNMultiSelect/src/namesCopy.ts`, `CopyWriter` (about lines 28–45):
 
 ```ts
 export interface CopyWriter {
     /** The host column's maximum length, which the names are cut to. */
     maxLength?: number;
-    write(value: string | null): Promise<void>;
-    /** `step`: whether reading the saved links (see readSaved) or writing the column failed. */
+    /** With `version` (see readHostAndLinks), the write is refused (412) when the record has changed since. */
+    write(value: string | null, version?: string): Promise<void>;
+    /** `step`: whether reading the saved links (see readSaved, readHostAndLinks) or writing the column failed. */
     onError(error: unknown, step: "read" | "write"): void;
     /**
      * The records linked to the record now, as saved on the server (those the user can read). When the writer has it,
      * the copy writes their names rather than the page's (see NamesCopy.namesToWrite).
      */
     readSaved?(): Promise<Item[]>;
+    /**
+     * The host column as saved now with the record's version, and the records linked to it, from one request (see
+     * NamesCopy.run). Used in place of readSaved when the writer has it.
+     */
+    readHostAndLinks?(): Promise<SavedHost>;
 }
 ```
 
-The full flow, including the read of the saved links before each write, is in 5.4.
+The controller's writer has `readHostAndLinks`; `readSaved` remains for a writer without it. The full flow, including
+the read before each write and what happens when the record changed meanwhile, is in 5.4.3.
 
 **Who uses it.** `index.ts` (`startCopy`, `updateSummary`, `finishDetached`).
 
@@ -2285,7 +2397,8 @@ The CSS also has a Windows high contrast block (`@media (forced-colors:active)`)
 system highlight colours, because the grey backgrounds disappear in that mode.
 
 **Typical customizations.** Colours, fonts and sizes are plain values in `CSS`. After a change, raise the number in
-`STYLE_ID` (see 3.6), and keep `LIST_MAX_HEIGHT` and `MENU_MAX_HEIGHT` in `view.ts` in line with the row height.
+`STYLE_ID` (see 3.6), and keep `ROW_HEIGHT`, `LIST_MAX_HEIGHT` and `MENU_MAX_HEIGHT` in `view.ts` in line with the
+row height.
 Recipe 10.3 lists the classes to change for each part of the field.
 
 ### 4.13 `src/types.ts`: shared types
@@ -2330,6 +2443,150 @@ order the server returns (by name, or the view's order).
 
 **Typical customization.** Adding a field to `Item` (for example a second column) is safe: the engine and the names
 copy only use `id` and `name`.
+
+### 4.14 `src/hostField.ts`: the host column on the form
+
+**Purpose.** `HostField` handles the host column on the control's own form, through the model-driven client API
+(`Xrm`). It shows the names of the picks there, marked never to be submitted; it tells whether the column is
+required; it makes the column's other controls on the form read-only; and it lifts a requirement while picks cannot be
+held before a record's first save. 5.10 explains what the controller does with it.
+
+**Which form.** The app gives each main-form dialog and each quick create form a `window.Xrm` of its own, in place of
+the page's while it is on top. `init` therefore makes the `HostField` at once, with `currentPage()` (3.4.1), and the
+field keeps that `Xrm` for good. The column is only used while that form shows the control's table and the record the
+control shows (`null` for a new record): `attribute(recordId)` returns nothing otherwise. A side pane gets no `Xrm` of
+its own: a control there finds the page's form, which it uses only when that form shows the same record.
+
+`control/NToNMultiSelect/src/hostField.ts`, `show` (about lines 195–226):
+
+```ts
+public show(recordId: string | null, text: string | null, ids: string, report: Report | null = null): boolean {
+    const attribute = this.attribute(recordId);
+    if (!attribute) return false;
+    if (report) this.watchOnChange(attribute);
+    const before = report?.first ? undefined : this.shownOn(recordId);
+    const now = Date.now();
+    const inRow = before?.lastPutBack !== undefined && now - before.lastPutBack < PUT_BACK_WINDOW_MS;
+    let putBacks = inRow ? before.putBacks : 0;
+    let lastPutBack = before?.lastPutBack;
+    let told = false;
+    try {
+        // First, so that the value never counts as a change to save.
+        if (attribute.getSubmitMode?.() !== "never") attribute.setSubmitMode?.("never");
+        const value = (attribute.getValue() as string | null | undefined) ?? null;
+        const newValue = value !== text;
+        if (newValue) attribute.setValue(text);
+        if (report) {
+            const change = report.changed && (newValue || before?.ids !== ids);
+            const putBack = !report.quiet && !!before?.seen && newValue && value !== before.value;
+            if (putBack) lastPutBack = now;
+            const answer = putBack && !change && putBacks < PUT_BACK_LIMIT;
+            if (answer) putBacks++;
+            told = change || answer || (report.linked && before?.saw !== undefined && before.saw !== text);
+            if (told) attribute.fireOnChange?.();
+        }
+    } catch {
+        // The form is being closed.
+    }
+    this.noteShown({ recordId, ids, value: text, saw: told ? text : before?.saw, putBacks, lastPutBack });
+    this.lock(attribute);
+    return true;
+}
+```
+
+* **OnChange** runs only with a `report` (*Selection on the form* = Event, 5.10.6; `syncHost` fills in `changed`,
+  `quiet` and `linked`):
+  * **when the records `changed`**, after a new value and after new records under the same names (`ids`, the sorted
+    ids of the records: a column too short for them all), never for an unchanged selection;
+  * **when the names go back** (`putBack`) over a value something else put into the column since the control set it
+    (the form's refresh after a save or a reload, Discard, a script), if an OnChange ran meanwhile. With Event, `watch`
+    is registered on the column (`watchOnChange`). At each OnChange it notes the value the handlers saw (`saw`), and
+    whether that was another value than the control set (`seen`). OnChange then runs again once the names are back
+    (`answer`), so that the last OnChange sees the selection, after each separate update, whatever its text. Without
+    such an OnChange no handler saw the other value, and none is run. Names put back run no OnChange while `quiet`:
+    for the first names an instance shows for a record (the form has just opened; with `first`, what the form of an
+    earlier visit noted in `Shown` is dropped), while a new record's picks are being linked, and while the column
+    waits for writes on their way (`waiting` in `syncHost`);
+  * **when a new record's picks are linked, or the writes the column waited for are done** (`linked`: `settled` in
+    `syncHost`, 5.10.6), if the last OnChange saw other names than the final ones (`saw`). For a new record that is
+    the control's own at the last change on the unsaved form (so a pick the server then refuses, or a change made
+    while they are being linked, is told here), one in OnSave, or one while they were being linked (the form's own
+    after the save, a script's); for writes on their way, one that ran meanwhile. Its handlers then see the selection
+    last. `saved`
+    (from `onRecordSaved`, before the engine gets the id) hands the unsaved form's `Shown` to the new record, so that
+    those OnChange runs count.
+  * **No quick endless loop with a script that writes the column.** A handler that rewrites the column in that very
+    OnChange gets the names back without another one: its own OnChange is noted on the `Shown` that `noteShown` then
+    replaces. One that rewrites it a moment later each time gets at most `PUT_BACK_LIMIT` (3) such OnChange runs in a
+    row. A put-back within `PUT_BACK_WINDOW_MS` (2 seconds) of the one before continues the row, with or without
+    OnChange, whatever put the other value there; after the third, the names go back without OnChange, so the script
+    is not started again, and the count starts again after 2 seconds without a put-back (`lastPutBack`). Names that go
+    back 2 seconds or more after the last put-back are answered each time, so a script whose rewrites come that far
+    apart keeps being answered, one OnChange each time. Scripts should treat the host column as read-only.
+* **The copies of the field share what was shown.** `shownSelections` holds what the column last showed for a record
+  (`Shown`: the records, the value the control set, `seen`, `saw`, `putBacks`, `lastPutBack`), by form, table and
+  column like `lifts`. The copies of the field on one form therefore run OnChange once between them: the second copy
+  finds the value and the records shown already.
+
+* **Submit mode first.** `setSubmitMode("never")` comes before `setValue`, so the value never counts as a change to
+  save: the form is not made dirty, and a save never writes the column. The form still checks the value like that of
+  any column, so a required column blocks saving, or moving a business process flow to its next stage, while it is
+  empty.
+* **The other controls of the column are made read-only** (`lockCopies`): a copy of the column in the header, or in a
+  stage of a business process flow, could otherwise be typed into and stand in for picks. Controls of N:N
+  Multi-Select itself (any publisher's `*.NToNMultiSelect`) are left alone. A process creates the controls of a stage
+  when it moves to the stage, so `lock` also follows `addOnStageChange` and `addOnStageSelected` and locks again then.
+* **Required?** `isRequired(recordId)` reads `getRequiredLevel()`: `"required"` for a Business required column, and for
+  one that a business rule or a script made required. *Business recommended* does not count.
+
+**Lifting a requirement.** Where picks cannot be held before the first save (`saveFirst`: quick create, dialogs, side
+panes and the tables of `NO_POST_SAVE_TABLES`, 5.6), a required host column would keep the record from being saved at
+all, because the field can take no value before then. `liftRequirement` sets the level to `"none"` and remembers that
+it did; `restoreRequirement` sets it back to `"required"`, but only while the level is still `"none"`: a business rule
+or a script that set a level of its own meanwhile keeps it. The copies of the field on one form share the column, so
+they share the lift (`lifts`, by form, table and column): the requirement comes back once the last copy that lifted it
+gives it back. `dispose` (called by `destroy`) gives it back too.
+
+`control/NToNMultiSelect/src/hostField.ts`, `liftRequirement` and `restoreRequirement` (about lines 286–314):
+
+```ts
+public liftRequirement(): void {
+    const attribute = this.attribute(null);
+    const lift = attribute && this.lift(true);
+    if (!attribute || !lift) return;
+    try {
+        if (attribute.getRequiredLevel?.() === "required") {
+            attribute.setRequiredLevel?.("none");
+            lift.attribute = attribute;
+        }
+    } catch {
+        // The form is being closed.
+        return;
+    }
+    if (lift.attribute) lift.copies.add(this);
+}
+
+/** Gives back this copy's part of a lifted requirement: the last copy to give it back restores it. */
+public restoreRequirement(): void {
+    const lift = this.lift(false);
+    if (!lift?.copies.delete(this) || lift.copies.size > 0) return;
+    const attribute = lift.attribute;
+    lift.attribute = null;
+    try {
+        // Unless something else (a business rule, a script) has set a level of its own since.
+        if (attribute?.getRequiredLevel?.() === "none") attribute.setRequiredLevel?.("required");
+    } catch {
+        // The form is being closed.
+    }
+}
+```
+
+**Who uses it.** Only `index.ts`: `init` makes it; `syncHost` calls `show`, `liftRequirement` and
+`restoreRequirement`; `holdBackLast` and `releaseHeldBack` ask `isRequired`; `unsavedPeers` compares copies with
+`sameField`; `destroy` calls `dispose`.
+
+**Typical customization.** To leave the column's other controls editable, remove the call of `lock` in `show`, but
+then a value typed there can satisfy a required column without a pick.
 
 ## 5. Key flows step by step
 
@@ -2388,7 +2645,7 @@ Step by step (`initialize` in `index.ts`):
 10. **Warm the list**: 50 ms later `warmOptions` starts loading the list, so the first opening is instant. It is
     skipped when the field is read-only or offline.
 
-`control/NToNMultiSelect/index.ts`, `initialize` (about lines 591–605, shortened):
+`control/NToNMultiSelect/index.ts`, `initialize` (about lines 650–664, shortened):
 
 ```ts
 // Use the latest context: the record may have been saved while the metadata was loading.
@@ -2434,7 +2691,7 @@ and opens at once.
 
 #### 5.2.1 One request decides the mode
 
-`control/NToNMultiSelect/index.ts`, `ensureOptions` (about lines 1347–1362):
+`control/NToNMultiSelect/index.ts`, `ensureOptions` (about lines 1636–1651):
 
 ```ts
 this.optionsPromise = (async () => {
@@ -2493,7 +2750,7 @@ sequenceDiagram
     C->>V: render (rows)
 ```
 
-**The part of `applySearch` that runs on each keystroke.** `control/NToNMultiSelect/index.ts`, `applySearch` (about lines 1424–1438):
+**The part of `applySearch` that runs on each keystroke.** `control/NToNMultiSelect/index.ts`, `applySearch` (about lines 1713–1727):
 
 ```ts
 if (immediate) {
@@ -2541,7 +2798,7 @@ Other details of the search:
 
 When the user scrolls to within 70 pixels of the end of the list, the view calls `onLoadMore`, which runs `loadMore`.
 
-`control/NToNMultiSelect/index.ts`, `loadMore` (about lines 1478–1488):
+`control/NToNMultiSelect/index.ts`, `loadMore` (about lines 1767–1777):
 
 ```ts
 // The next link already carries the filter, search term and ordering; it must keep its page size.
@@ -2628,7 +2885,7 @@ sequenceDiagram
     C->>C: subgrid refresh in 600 ms,<br/>names copy, other instances re-read
 ```
 
-`control/NToNMultiSelect/index.ts`, `onToggle` (about lines 1227–1245):
+`control/NToNMultiSelect/index.ts`, `onToggle` (about lines 1318–1349):
 
 ```ts
 private onToggle(items: Item[], select: boolean): void {
@@ -2637,10 +2894,13 @@ private onToggle(items: Item[], select: boolean): void {
     const max = this.config?.maxSelections ?? 0;
     if (select && max > 0) {
         // A record whose removal is still on its way keeps its place, since the removal may fail and bring it
-        // back: the limit counts it until the removal succeeded, and picking it again takes no new place.
-        const adding = items.filter((i) => !engine.occupies(i.id)).length;
+        // back: the limit counts it until the removal succeeded, and picking it again takes no new place. A value
+        // whose removal is held back gives its place to the pick that replaces it (see holdBackLast), so picking it
+        // again takes a place like a new one.
+        const held = this.heldHere();
+        const adding = items.filter((i) => !engine.occupies(i.id) || !!held?.has(i.id)).length;
         // A pick that takes no new place is never refused (the record may hold more links than the limit already).
-        if (adding > 0 && engine.occupiedCount() + adding > max) {
+        if (adding > 0 && engine.occupiedCount() - this.heldCount() + adding > max) {
             // The view already blocks this; the check here also covers + New and anything else that selects.
             this.error = this.t.maxNote(max);
             this.render();
@@ -2648,9 +2908,24 @@ private onToggle(items: Item[], select: boolean): void {
         }
     }
     this.error = null;
-    engine.setMany(items, select);
+    const send = select ? this.takeBack(items) : this.holdBackLast(engine, items);
+    const version = engine.version;
+    if (send.length) engine.setMany(send, select);
+    if (engine.version === version) {
+        // Only a held-back removal changed: nothing to send, but the field shows it.
+        this.render();
+        return;
+    }
+    this.markPeersStale(engine);
+    // Changes made on links another instance had changed: read them again once these are written.
+    if (this.hostStale) this.scheduleResync();
 }
 ```
+
+On a field that is not required, `holdBackLast` returns the removals unchanged and `takeBack` the picks, so everything
+goes to the engine as before. On a saved record with a required host column, `holdBackLast` may keep removals back,
+and `takeBack` turns a pick of a held-back value into "keep it" (nothing is sent). 5.10 explains both.
+`markPeersStale` tells the other copies of the field on the page that their links are out of date (5.10).
 
 What the user sees:
 
@@ -2690,7 +2965,7 @@ flows, integrations and the Web API are not limited at all. To make the limit ho
 *Maximum selections = 2, reached: `render` passes `maxReached` and the note `maxReached(max)`, the view draws the
 other rows with `is-disabled` (`drawRow`), and + New is hidden (`canCreate` is false).*
 
-**Errors during a batch.** `control/NToNMultiSelect/index.ts`, `onWriteError` (about lines 935–962):
+**Errors during a batch.** `control/NToNMultiSelect/index.ts`, `onWriteError` (about lines 997–1024):
 
 ```ts
 /** Reports a failed write; returns whether it may have been saved all the same (see mayHaveSaved). */
@@ -2737,7 +3012,7 @@ private onWriteError(engine: SyncEngine, item: Item, operation: "add" | "remove"
   connection dropped may in fact have been saved. While a failed add of unknown outcome holds a place, a failed re-read
   is tried again (5.5.2).
 
-`control/NToNMultiSelect/index.ts`, `mayHaveSaved` (about lines 186–192):
+`control/NToNMultiSelect/index.ts`, `mayHaveSaved` (about lines 208–214):
 
 ```ts
 /**
@@ -2750,7 +3025,7 @@ function mayHaveSaved(error: unknown): boolean {
 ```
 
 **After the batch** (`onSettled`, once nothing is left in flight). `control/NToNMultiSelect/index.ts`, `onSettled`
-(about lines 964–993):
+(about lines 1026–1062):
 
 ```ts
 private onSettled(engine: SyncEngine, changed: boolean): void {
@@ -2761,8 +3036,10 @@ private onSettled(engine: SyncEngine, changed: boolean): void {
     }
     const hadErrors = this.batchErrors > 0;
     const unknown = this.batchUnknown;
+    const markedPeers = this.markedPeers;
     this.batchErrors = 0;
     this.batchUnknown = false;
+    this.markedPeers = false;
     if (unknown) {
         // A write may have been saved although it failed: the copy follows the links saved on the server, and the
         // re-read that settles it gets its own retries (see loadSelected).
@@ -2776,6 +3053,11 @@ private onSettled(engine: SyncEngine, changed: boolean): void {
         if (!unknown) this.updateSummary();
         const recordId = engine.getRecordId();
         if (recordId) this.resyncPeers(this.recordKey(recordId), engine);
+    } else if (markedPeers) {
+        // Nothing was saved after all (the writes failed or undid each other), but the other instances were told
+        // their links are out of date: they read them again.
+        const recordId = engine.getRecordId();
+        if (recordId) this.resyncPeers(this.recordKey(recordId), engine, true);
     }
     if (hadErrors) {
         // A failure might not be what it seems (the connection dropped after the server saved): re-read.
@@ -2787,7 +3069,8 @@ private onSettled(engine: SyncEngine, changed: boolean): void {
 
 * When at least one write succeeded, or one failed in a way that may have saved it: the related subgrids are
   refreshed 600 ms later (5.5), and other instances on the page that show the same record read their links again
-  (`resyncPeers`).
+  (`resyncPeers`). When nothing was saved after all but the other instances were marked out of date (`markPeersStale`,
+  5.10.4), they read their links again too, so that they stop leaving the host column alone.
 * The names are copied (5.4): after a batch that changed something, when the page's names differ from what the column
   holds (`updateSummary()`); after a batch with a write of unknown outcome, whatever the page shows
   (`updateSummary(true)`, 5.4.1): the field rolled that value back, but the copy follows the links saved on the
@@ -2831,7 +3114,7 @@ The copy is written:
 `updateSummary` does nothing when the setting is off, when the record has no id yet, or when column security does not let the user
 update the host column (`columnLocked`, 5.9).
 
-`control/NToNMultiSelect/index.ts`, `updateSummary` (about lines 1062–1074):
+`control/NToNMultiSelect/index.ts`, `updateSummary` (about lines 1153–1165):
 
 ```ts
 private updateSummary(force = false): void {
@@ -2873,19 +3156,24 @@ sequenceDiagram
     C->>N: update(selected, writer), or refresh(writer)
     N->>N: refresh, names that differ from the column, or a write on its way? then pending = true, run() unless writing
     loop while an update is pending
-        N->>R: readSaved() = loadSelected(recordId)
-        R->>D: GET the links of the record
-        D-->>R: links saved now
-        R-->>N: items
+        N->>R: readHostAndLinks() = readHostAndLinks(recordId, column)
+        R->>D: GET the record (column, ETag) with its links expanded
+        D-->>R: the column, its version and the links saved now
+        R-->>N: value, version, items
         N->>C: showSaved (the field shows them)
         N->>N: sort, namesText()
         alt same as the column holds
             N->>N: skip
         else different
-            N->>R: write(value) = updateRecord(...)
-            R->>D: PATCH the record with If-Match
-            D-->>R: 204
-            N->>N: saved = value
+            N->>R: write(value, version) = updateRecord(...)
+            R->>D: PATCH the record with If-Match: version
+            alt unchanged since the read
+                D-->>R: 204
+                N->>N: saved = value
+            else changed meanwhile (at most 3 times)
+                D-->>R: 412
+                N->>N: pending = true: read again
+            end
         end
     end
 ```
@@ -2894,11 +3182,11 @@ sequenceDiagram
 on its way. `refresh` always sets `pending`: it is only called after a link write whose outcome is not known, when the
 page's names cannot be trusted.
 
-`control/NToNMultiSelect/src/namesCopy.ts`, `NamesCopy.refresh`, `update` and `run` (about lines 79–131):
+`control/NToNMultiSelect/src/namesCopy.ts`, `NamesCopy.refresh`, `update` and `run` (about lines 91–159):
 
 ```ts
 public refresh(writer: CopyWriter): void {
-    if (!writer.readSaved) return;
+    if (!writer.readSaved && !writer.readHostAndLinks) return;
     this.writer = writer;
     this.pending = true;
     if (!this.writing) void this.run();
@@ -2918,13 +3206,23 @@ public update(selected: Item[], writer: CopyWriter): void {
 
 private async run(): Promise<void> {
     this.writing = true;
+    let conflicts = 0;
     try {
         while (this.pending) {
             this.pending = false;
             const writer = this.writer!;
             let value: string | null;
+            let host: SavedHost | null = null;
             try {
-                value = writer.readSaved ? await this.namesToWrite(writer, writer.readSaved) : this.wanted;
+                // The record and its links, read together. Anyone who writes the column after this read (the
+                // names copy plug-in for a link made elsewhere, another tab, another user) gives the record a new
+                // version, and the write below is refused rather than replacing their newer names with these.
+                if (writer.readHostAndLinks) {
+                    host = await writer.readHostAndLinks();
+                    value = namesText([...host.items].sort(compareItems), writer.maxLength);
+                } else {
+                    value = writer.readSaved ? await this.namesToWrite(writer, writer.readSaved) : this.wanted;
+                }
             } catch (error) {
                 // The saved links couldn't be read, so the right names aren't known: the column keeps what it
                 // holds, and the failure is shown like a failed write. An update asked for during the read is
@@ -2932,11 +3230,17 @@ private async run(): Promise<void> {
                 writer.onError(error, "read");
                 continue;
             }
+            if (host) this.saved = host.value;
             if (value === this.saved) continue;
             try {
-                await writer.write(value);
+                await (host ? writer.write(value, host.version) : writer.write(value));
                 this.saved = value;
             } catch (error) {
+                if (error instanceof DataverseError && error.status === 412 && ++conflicts <= MAX_CONFLICTS) {
+                    // Changed meanwhile: read the record and its links again, and write what they say now.
+                    this.pending = true;
+                    continue;
+                }
                 // The links stay as they are. The write may still have reached the column (a timeout, or a
                 // connection lost after the server saved it), so its value isn't known and the next update writes.
                 // An update asked for during the write is still done.
@@ -2953,16 +3257,25 @@ private async run(): Promise<void> {
 ```
 
 A failed read or write is reported (`onError`), and the loop goes on: an update that came in while it was on its way
-(`pending` set again) is still done, with a new read. Without one, the loop ends and the next update tries again.
+(`pending` set again) is still done, with a new read. Without one, the loop ends and the next update tries again. A
+write refused with 412 (the record changed after the read) is not reported: the loop reads again and writes what the
+record says now, up to `MAX_CONFLICTS` (3) times in one run; a fourth refusal is reported like any failed write.
 
 **Why read the links before writing?** The page knows the links it read when the record opened, plus its own changes.
 A link made elsewhere while the form was open (another user, another tab, a flow, the other side of the relationship)
 is not in that list. Writing the page's names would remove that link's name from the column. Reading the saved links
 just before the write avoids that. The read also updates the field (`showSaved`), so links made elsewhere appear with
-the user's next change, without a reload. A small window remains: a link made elsewhere in the moment between the read
-and the write can still be missed. That moment was about 50 ms in a development environment; it is longer on a slow
-connection, and when the write has to be sent again (the retries wait 1, 2 and 4 seconds, and throttling can make it
-wait up to about a minute, 4.6). A change missed this way reaches the column with the record's next change of links.
+the user's next change, without a reload.
+
+**Why the record and its links in one request, and the version.** The read returns the record's version (its ETag)
+with the column and the links, and the write is sent with `If-Match: <that version>`. Anyone who changes the record
+between the read and the write (the names copy plug-in after a link made elsewhere, another tab, another user) gives
+it a new version, so Dataverse refuses the write with 412 instead of letting these older names replace newer ones. The
+copy then reads again and writes what the record says now. Without a version (a writer that only has `readSaved`), the
+write is sent with `If-Match: *`. The request asks never to be answered from the browser's cache
+(`If-None-Match: null`, 4.6), as Microsoft advises for a query that expands a collection-valued navigation property.
+The column's value from the same read also tells the copy what the column holds now, so it skips a write that would
+change nothing even when someone else wrote those names.
 
 **Whose names the control writes.** The read runs in the editing user's session, with that user's privileges, so the
 control writes the names of the linked records that user can read; a linked record the user cannot open is left out
@@ -2971,25 +3284,26 @@ With the plug-in installed, the column therefore holds every name after a link m
 editing user can see after a change made in the control (or in a subgrid of the same form, which the control writes
 after the plug-in).
 
-**What the read costs.** Measured in a development environment, the names were written about 120 ms after the link was
-saved, instead of 67 ms without the read. Picking is not slower: the read and the write happen after the link is
-saved, while the user goes on.
+**What the read costs.** Measured in a development environment, the names were written about 128 ms after the link was
+saved (about 120 ms with the earlier read of the links alone, 67 ms without any read). For a record with 2,488 links,
+the combined read took 441–447 ms, against 405–501 ms for the links alone. Picking is not slower: the read and the
+write happen after the link is saved, while the user goes on.
 
-**The writer the controller builds.** `control/NToNMultiSelect/index.ts`, `startCopy` (about lines 1100–1114):
+**The writer the controller builds.** `control/NToNMultiSelect/index.ts`, `startCopy` (about lines 1191–1205):
 
 ```ts
 const copy: HostCopy = {
     names: namesCopyFor(`${recordKey}|${host}`, this.loadedCopy),
     writer: {
         maxLength: attributes.MaxLength,
-        write: (value) => trackCopy(data.updateRecord(recordId, host, value)),
+        write: (value, version) => trackCopy(data.updateRecord(recordId, host, value, version)),
         onError: (error, step) => this.onCopyFailed(copy, error, label, t, step),
-        readSaved: async () => {
+        readHostAndLinks: async () => {
             const engine = this.engine;
             const version = engine?.version;
-            const items = await trackCopy(data.loadSelected(recordId));
-            this.showSaved(engine, version, recordId, items);
-            return items;
+            const saved = await trackCopy(data.readHostAndLinks(recordId, host));
+            this.showSaved(engine, version, recordId, saved.items);
+            return saved;
         },
     },
 };
@@ -2997,8 +3311,9 @@ const copy: HostCopy = {
 
 * The **text** is the names sorted by `compareItems` (case and accent insensitive, then by id), joined with "; ", cut
   to the column's maximum length with "…", or empty (`null`) when nothing is linked.
-* The **write** is a `PATCH` of the record with `If-Match: *`. Without that header a `PATCH` to a record that was just
-  deleted would create it again. It is sent with `keepalive` (bodies up to 60,000 bytes, 4.6): once it is on its way,
+* The **write** is a `PATCH` of the record with `If-Match: <version>`, the ETag of the read (`*` when there is none).
+  The header also keeps the `PATCH` an update: without it, a `PATCH` to a record that was just deleted would create it
+  again. It is sent with `keepalive` (bodies up to 60,000 bytes, 4.6): once it is on its way,
   the browser finishes it even if the user closes the page meanwhile. A keepalive request that the browser refuses is
   sent again as an ordinary one.
 * The update goes through Dataverse like any other: it does not make the form dirty, but plug-ins, flows and auditing
@@ -3010,6 +3325,7 @@ const copy: HostCopy = {
 | Step | Message | Effect |
 | --- | --- | --- |
 | Read of the saved links fails | "The names could not be copied into *Label*: " + a read reason, for example "You don't have permission to see these related records." | Nothing is written; the column keeps its value. An update that came in during the read is still done (it reads again); otherwise the next change tries again. After a change whose outcome is not known, the field's re-read of the saved links (5.5.2) also writes the names when it finds links the field did not show (while the record is open). |
+| Write refused because the record changed after the read (412) | None, at first | The copy reads the record and its links again and writes what they say now, up to 3 times in one run. A fourth refusal is reported like a failed write. |
 | Write fails | "The names could not be copied into *Label*: " + an update reason, for example "You don't have permission to change this record. (prvWrite...)" | The column's value is now unknown, so the next change writes for sure. An update that came in during the write is still done. |
 
 The message appears under the field, or as an app notification when the control is already gone (`onCopyFailed`). The
@@ -3052,7 +3368,7 @@ When a user adds or removes a record in a subgrid, the grid reloads and fires it
 it (`watchSubgrids`). But the grid also fires OnLoad when **the control** refreshed it. These "echoes" are not someone
 else's change, so they are counted and ignored.
 
-`control/NToNMultiSelect/index.ts`, `onSubgridLoad` (about lines 320–326):
+`control/NToNMultiSelect/index.ts`, `onSubgridLoad` (about lines 366–372):
 
 ```ts
 private readonly onSubgridLoad = (): void => {
@@ -3097,13 +3413,14 @@ record), then reads; with `isResync = true` it also copies the names when the li
 changed during the read, the user clicked something in the meantime, so the result may be stale: it reads again later
 instead of using it.
 
-`control/NToNMultiSelect/index.ts`, `loadSelected` (about lines 814–848, shortened):
+`control/NToNMultiSelect/index.ts`, `loadSelected` (about lines 869–907, shortened):
 
 ```ts
 try {
     await this.peersIdle(recordId);
     await engine.whenIdle();
     const version = engine.version;
+    const marks = this.staleMarks;
     const items = await data.loadSelected(recordId);
     if (token !== this.initToken || engine !== this.engine) return false;
     if (engine.version !== version || engine.isBusy()) {
@@ -3113,6 +3430,9 @@ try {
     }
     const before = engine.selected();
     engine.setConfirmed(items);
+    this.readsDone++;
+    // Read once the other instances' writes were done, and none of them has changed the links since.
+    if (this.staleMarks === marks) this.hostStale = false;
     this.resyncRetries = 0;
     // The message of an earlier read that failed is out of date now (another message stays).
     if (this.error?.startsWith(this.t.loadSelectedFailed)) this.error = null;
@@ -3127,7 +3447,7 @@ try {
     console.error(`[${CONTROL_NAME}] loading related records failed`, error);
     // A place held by an add whose outcome isn't known is only freed by a read of the saved links: while there
     // is one, the read is tried again a few times (as the first load is).
-    if (isResync && engine === this.engine && engine.hasUncertain() && this.resyncRetries < LOAD_RETRY_DELAYS_MS.length) {
+    if (isResync && engine === this.engine && (engine.hasUncertain() || this.checksPending()) && this.resyncRetries < LOAD_RETRY_DELAYS_MS.length) {
         const delay = LOAD_RETRY_DELAYS_MS[this.resyncRetries++];
         clearTimeout(this.resyncTimer);
         this.resyncTimer = setTimeout(() => {
@@ -3212,6 +3532,13 @@ Step by step:
 A **failed or cancelled save** (for example a required field is empty) links nothing; the picks stay until a later save
 succeeds.
 
+**The host column on a new record** shows the held picks of every copy of the field on the form
+(`picksOnUnsavedForm`), each record once: all of them are linked when the record is saved, so a required host column
+lets the record be saved once something is picked, and no copy empties or replaces what another one holds. Where the
+field shows "Save the record first ...", a required host column has its requirement lifted until the record is saved
+(4.14, 5.10). The record is created first and linked afterwards: if the links then fail, the record exists without
+them, and the field shows the error.
+
 **Destroyed while the form stays open.** A business rule can hide and show the field, which destroys and re-creates the
 control. The held picks then become an **orphan** (`retireEngine`), stored per form and per relationship and host
 column. The next instance on the same form adopts them (`adoptOrphan`). If no instance comes back (*Save & Close*), the
@@ -3294,7 +3621,7 @@ Two cases are handled differently.
 already on its way is finished by the browser, 4.6). The control installs one
 `beforeunload` handler per page that asks the browser to confirm while anything is unsaved.
 
-`control/NToNMultiSelect/index.ts`, `installUnloadGuard` (about lines 128–133):
+`control/NToNMultiSelect/index.ts`, `installUnloadGuard` (about lines 150–155):
 
 ```ts
 window.addEventListener("beforeunload", (event) => {
@@ -3334,13 +3661,16 @@ flowchart TD
 
 `finishDetached` runs after each batch of the detached engine, and finishes the job when nothing is left.
 
-`control/NToNMultiSelect/index.ts`, `finishDetached` (about lines 995–1016):
+`control/NToNMultiSelect/index.ts`, `finishDetached` (about lines 1064–1088):
 
 ```ts
 private finishDetached(engine: SyncEngine, away: Detached, changed: boolean): void {
     if (changed || away.unknown) {
         away.bridge.refreshSubgrids(engine.getRecordId());
         this.resyncPeers(away.key, engine);
+    } else {
+        // Nothing was saved after all, but the instances told their links are out of date read them again.
+        this.resyncPeers(away.key, engine, true);
     }
     if (engine.hasPendingChanges() || engine.isBusy()) return;
     if (away.failures > 0) {
@@ -3382,7 +3712,7 @@ A **lost connection** in the browser is a different case: requests fail with a n
 (4.6). If they still fail, the user sees "Can't reach the server. Check your connection and try again.", and the rest
 of the batch is cancelled. When the browser fires its `online` event, `onOnline` recovers.
 
-`control/NToNMultiSelect/index.ts`, `onOnline` (about lines 327–342):
+`control/NToNMultiSelect/index.ts`, `onOnline` (about lines 373–388):
 
 ```ts
 private readonly onOnline = (): void => {
@@ -3405,7 +3735,7 @@ private readonly onOnline = (): void => {
 
 #### 5.9.2 Read-only
 
-`control/NToNMultiSelect/index.ts`, `readOnly` and `columnLocked` (about lines 1214–1221):
+`control/NToNMultiSelect/index.ts`, `readOnly` and `columnLocked` (about lines 1305–1312):
 
 ```ts
 private readOnly(): boolean {
@@ -3439,6 +3769,332 @@ not read the column): what it shows are the related records, read through the re
 allowed to read.
 
 The read-only look is shown in 6.2.
+
+### 5.10 A required host column
+
+The host column can be required: Business required, required by a business rule or a script, or a required step of a
+business process flow. Each pick is saved at once and the form never saves the column, so the control makes the
+form's own check mean "at least one value is linked". It does that in four parts: what the column shows on the form,
+new records, removing the last value, and coordination between the copies of the field on the page.
+
+#### 5.10.1 What the form checks
+
+`syncHost`, at the end of every `render`, puts names into the host column on the form.
+
+`control/NToNMultiSelect/index.ts`, `syncHost` (about lines 1892–1937):
+
+```ts
+private syncHost(): void {
+    const host = this.hostField;
+    if (!host) return;
+    if (this.saveFirst) {
+        host.liftRequirement();
+        return;
+    }
+    host.restoreRequirement();
+    const engine = this.engine;
+    // Column security keeps the user from updating the column: it stays as the form shows it, as the field would.
+    if (!engine || !this.selectedLoaded || this.fatalError || this.columnLocked()) return;
+    const recordId = engine.getRecordId();
+    if (recordId && this.hostStale) return;
+    // ... "Selection on the form" (5.10.6)
+    let items: Item[] | null = recordId ? this.shown(this.cachedSaved) : this.picksOnUnsavedForm();
+    // ... Event (5.10.6)
+    const maxLength = (this.context.parameters.value as unknown as { attributes?: { MaxLength?: number } }).attributes?.MaxLength;
+    const text = items ? namesText(items, maxLength) : this.hostText;
+    // ... (5.10.6)
+    // ...
+    host.show(recordId, text, ids, formSelection === "event" ? { changed, first, quiet: first || linking || waiting, linked: settled } : null);
+}
+```
+
+* **On a saved record**, the names of the **saved** picks (`SyncEngine.savedSelected`, 4.4), less the values whose
+  removal is held back (5.10.3). A pick still on its way does not count: if the form could be saved while the only pick
+  was still on its way and that pick then failed, the record would be saved without a value. A save in that fraction
+  of a second shows the form's own "required" message, which goes once the pick is saved.
+* **On a new record**, the picks held for the first save (5.6).
+* With *Selection on the form* = Event, a saved record's column holds its saved selection once the changes being
+  written are done (5.10.6). A required column is emptied in the same cases as with No; an empty one is filled again
+  only once the changes being written are done, the held-back removal of the last value included (after *Select all*,
+  the whole batch; a removal still waiting for its read, 5.10.3, is not waited for). With No, and while a new record's
+  picks are being linked, it is filled at the first saved value.
+* The column keeps the value the form has until the links are known, when they could not be read, when column
+  security keeps the user from updating it (`columnLocked`), and while another copy of the field on the page has
+  changed the links since this one read them (`hostStale`, 5.10.4). A form's OnLoad script on a saved record therefore
+  reads the value the form loaded, not the names; on a new record nothing is read, so the picks (none yet) may already
+  have replaced it.
+* Where picks can only be made once the record is saved (`saveFirst`), the requirement is lifted until then (4.14).
+
+The text is `namesText` (4.10), the same text *Copy names into the host column* writes, cut to the column's maximum
+length.
+
+#### 5.10.2 New records
+
+The held picks fill the column (5.6), so a required host column lets a new record be saved once something is picked;
+the picks are then linked. Where picks cannot be held, the requirement is lifted until the record is saved, so that
+the record can be created; once it is saved, the field is required again and asks for a value like any required field.
+
+#### 5.10.3 Removing the last value
+
+On a saved record with a required host column, every removal goes through `holdBackLast` (from `onToggle`, 5.3).
+
+`control/NToNMultiSelect/index.ts`, `holdBackLast` (about lines 1359–1382):
+
+```ts
+private holdBackLast(engine: SyncEngine, items: Item[]): Item[] {
+    const recordId = engine.getRecordId();
+    if (!recordId || !this.hostField?.isRequired(recordId)) return items;
+    const left = this.survivors(recordId, new Set(items.map((item) => item.id))).length;
+    if (left > 1) return items;
+    const readsAtHold = left === 1 ? this.readsDone : undefined;
+    const key = this.recordKey(recordId);
+    const held = heldRemovals.get(key) ?? new Map<string, Held>();
+    const send: Item[] = [];
+    // The picks of a new record's first save that are still being linked count as saved: the record was saved with
+    // them (see syncHost).
+    const firstSave = this.hostSyncedFor === "" ? new Set(this.hostIds.split(",")) : null;
+    for (const item of items) {
+        // A pick still on its way isn't saved: undoing it is sent as usual.
+        if (engine.isConfirmed(item.id) || firstSave?.has(item.id)) held.set(item.id, { item, holder: this, readsAtHold });
+        else send.push(item);
+    }
+    if (held.size) heldRemovals.set(key, held);
+    this.renderPeers(key);
+    if (send.length < items.length && readsAtHold !== undefined) void this.loadSelected(this.initToken, true);
+    // Its own count couldn't be trusted (see survivors): the hold is settled once the links are read again.
+    else if (this.hostStale) this.scheduleResync();
+    return send;
+}
+```
+
+**A removal that would leave no saved value is held back.** The value disappears from the field and from the host
+column, so the form's own check stops a save, but nothing is sent. Leaving the record keeps the value on the record, as
+leaving an emptied required field without saving does: there is no prompt, and the form is not made dirty.
+
+* The held removal is sent once another value is saved, or once the field is not required any more (a business rule).
+  `releaseHeldBack` checks that at the start of every `render`.
+* Picking the held value again takes it back (`takeBack`): nothing is sent for it.
+* Under *Maximum selections*, a held value gives its place to the pick that replaces it (`heldCount`): with a maximum
+  of 1, picking another value replaces the last one. Picking the held value again then takes a place like a new pick.
+* A pick still on its way is not saved yet: removing it is sent as usual. A new record's first-save picks still being
+  linked count as saved, though (`firstSave`: the record was saved with them), so removing the only one is held back.
+* Several removals at once (*Select all*) that would leave nothing are all held back.
+
+**A removal that would leave exactly one value waits for a read first.** Another tab or user may have removed that
+value since this instance read the links. `holdBackLast` holds this removal too, notes the instance's number of reads
+(`readsAtHold`, from `readsDone`) and reads the saved links at once. `releaseHeldBack` sends it only after a later read,
+and only when a value still survives on the links just read; otherwise it stays held, as a last value. A failed read
+keeps it held, and the read is tried again (`checksPending`, 5.5.2). The value disappears from the field at once
+either way. This costs one read before that removal reaches Dataverse (it was sent 72 ms after the click instead of
+5 ms in a development environment); removals that leave two values or more are sent at once, with no read.
+
+`control/NToNMultiSelect/index.ts`, `releaseHeldBack` (about lines 1435–1458):
+
+```ts
+private releaseHeldBack(): void {
+    const engine = this.engine;
+    const recordId = engine?.getRecordId();
+    const key = recordId ? this.recordKey(recordId) : null;
+    const held = key ? heldRemovals.get(key) : undefined;
+    if (!engine || !recordId || !key || !held) return;
+    const required = this.hostField?.isRequired(recordId);
+    const mine: Item[] = [];
+    for (const [id, entry] of [...held]) {
+        if (entry.holder !== this) continue;
+        if (!engine.isSelected(id)) held.delete(id);
+        // Not while it waits for a read of the saved links (see holdBackLast).
+        else if (!required || entry.readsAtHold === undefined || this.readsDone > entry.readsAtHold) mine.push(entry.item);
+    }
+    if (!held.size) heldRemovals.delete(key);
+    if (!mine.length) return;
+    if (required && this.survivors(recordId, new Set()).length === 0) return;
+    for (const item of mine) held.delete(item.id);
+    if (!held.size) heldRemovals.delete(key);
+    const version = engine.version;
+    engine.setMany(mine, false);
+    if (engine.version !== version) this.markPeersStale(engine);
+    this.renderPeers(key);
+}
+```
+
+#### 5.10.4 Copies of the field on one page
+
+Two copies of the field can show the same record: a copy in the header, a copy on another tab of the form, or a dialog
+of the same record. They share the column, so they coordinate:
+
+* **`heldRemovals`** holds the removals held back, by record and relationship (`recordKey`), for the whole page. Every
+  copy that shows the record leaves those values out of its field and of the column (`shown`, `heldHere`), and the copy
+  that holds them (`holder`) sends them once it may. `renderPeers` redraws the other copies when that changes.
+* **`survivors`** counts what stays saved over the whole page: the saved picks of every copy, less the values held back
+  and every copy's `removals()` (4.4). Two copies that remove different values at the same time therefore cannot empty
+  the field between them.
+* **`hostStale`**: once a copy changes links, `markPeersStale` marks the other copies as out of date (`staleMarks`
+  counts the marks, so that a read that began before the last one does not clear it). A stale copy leaves the host
+  column alone (`syncHost`) and trusts no count of its own (`survivors` returns nothing), so a removal there is held
+  until it has read the links again.
+* **`handOverHeld`** (from `retireEngine`): when the copy that holds removals goes, another copy that shows the record
+  takes them over. A removal still waiting for a read then waits for one of the new holder's. Without another copy,
+  they are dropped and the values stay on the record.
+
+#### 5.10.5 What is not covered
+
+The control enforces the requirement in the browser, with what it knows. It does not cover:
+
+* **Two removals in different tabs or by different users at the same moment**, within about one read of the links
+  (0.1–0.3 s): each tab's read can still show the value the other one is removing.
+* **A tab that missed two or more removals made elsewhere.** Its own count still leaves two values or more, so it sends
+  the removal without a read and can remove the real last value; the form then blocks the save, but the record has no
+  link. Reading before every removal would close this case, at the cost of one read before each removal on a required
+  field (55–100 ms measured, about 200 ms on a record with 1,000 links); the control does not do that, to keep removals
+  as quick as picks.
+* **Links changed elsewhere**: subgrids, flows, imports and the Web API are not checked at all.
+* **Two copies of the same required field on one form**, in two narrow cases: with *Maximum selections* 1, picking the
+  held value again in one copy while the other copy's replacement is still being saved can save both; and a removal
+  handed over to a copy that has not read the links since another change can be dropped (the value then stays). Place a
+  required field once per form.
+
+To make the requirement hold everywhere, enforce it on the server (10.9).
+
+#### 5.10.6 Selection on the form
+
+Once the control has read the links, the host column on the form holds the names of the saved selected values
+(5.10.1; on a new record, the picks held for the first save), so a form script can read the selection, for example in
+OnSave: `formContext.getAttribute("<host column>").getValue()` is the names joined with "; " and cut to the column's
+maximum length with "…" (5.10.1), or `null` when nothing is selected. On a saved record, before the first read (in the
+form's OnLoad), while the links cannot be read, and for users whom column security keeps from updating the column, it
+keeps the value the form loaded (5.10.1). The setting *Selection on the form* (`formSelection`) decides whether the
+form is also told when the selection changes:
+
+| Value | What `syncHost` does | OnChange | Form unsaved | Saved by the form |
+| --- | --- | --- | --- | --- |
+| No (0, default) | `host.show(recordId, text, ids, null)` | No | No | No |
+| Event (1) | `host.show(recordId, text, ids, { changed, quiet, linked })`: `show` runs `fireOnChange` after `setValue` when the selection changed, when it puts the names back, and when a new record's picks are linked (4.14) | Yes | No | No |
+
+Any other value counts as No (`readConfig`).
+
+`control/NToNMultiSelect/index.ts`, the end of `syncHost` (about lines 1905–1936):
+
+```ts
+const formSelection = this.config?.formSelection ?? "no";
+const key = recordId ?? "";
+// A new record just saved: the picks of its first save stay the ones to compare with, so the save is no change.
+// While they are still being linked (until the last write is back, a refused one too, and a write whose outcome
+// isn't known is settled by a read), the column shows the links saved so far, as for any saved record (the
+// record was saved without the names, so the form's refresh after the save finds the same value), and no change
+// is reported: the names coming back as the picks are linked are none either.
+const justSaved = key !== "" && this.hostSyncedFor === "";
+const linking = justSaved && (engine.hasPendingChanges() || engine.isBusy() || engine.hasUncertain());
+const first = this.hostSyncedFor !== key && !justSaved;
+let items: Item[] | null = recordId ? this.shown(this.cachedSaved) : this.picksOnUnsavedForm();
+if (recordId && formSelection === "event" && !linking && (items.length > 0 || !host.isRequired(recordId))) {
+    // The saved selection, once nothing is being written and every outcome is known (null: the column keeps what
+    // it stands for meanwhile).
+    if (!engine.isBusy() && !engine.hasPendingChanges() && !engine.hasUncertain()) items = this.cachedSelected;
+    else if (!first) items = null;
+}
+const maxLength = (this.context.parameters.value as unknown as { attributes?: { MaxLength?: number } }).attributes?.MaxLength;
+const text = items ? namesText(items, maxLength) : this.hostText;
+const ids = items ? items.map((item) => item.id).sort().join() : this.hostIds;
+const changed = !first && !linking && ids !== this.hostIds;
+if (!linking) {
+    this.hostSyncedFor = key;
+    this.hostText = text;
+    this.hostIds = ids;
+}
+// While the column waits for writes (items null), names put back run no OnChange either; once the writes are
+// done, OnChange answers what the handlers saw meanwhile (see HostField.show).
+const waiting = items === null;
+const settled = !linking && !waiting && (justSaved || this.hostWaited);
+this.hostWaited = waiting;
+host.show(recordId, text, ids, formSelection === "event" ? { changed, first, quiet: first || linking || waiting, linked: settled } : null);
+```
+
+* **The saved selection, once it is written.** With Event, a saved record's column stands for the selection saved on
+  the server once nothing is being written (`isBusy`, `hasPendingChanges`, 4.4): the selected records are then the
+  saved links. While changes are on their way, `items` is `null` and the column keeps what it stands for: a change
+  already saved is shown and told only once the others are done too. OnChange therefore runs for a pick once it is
+  linked and for a removal once it has gone through, never for a pick or a removal the server refuses (4.4 rolls it
+  back first), and once for changes written together (*Select all*, or picks and removals made while others are still
+  being written). A write whose outcome is not known (`mayHaveSaved`, 5.3) is waited for too (`hasUncertain`): the
+  column keeps what it stands for until the read that follows settles it. Names put back while the column waits run
+  no OnChange (`waiting`); once the writes are done, OnChange runs once if an OnChange saw other names meanwhile
+  (`settled`, `hostWaited`). With No, the column follows `savedSelected` as before (5.10.1), and a removal leaves it
+  at once.
+* **A required field is still empty at once.** When none of its saved values stays (`items` is empty: their removals
+  are on their way, or the last one is held back, 5.10.3), a required column is empty at once with either value, so
+  that the form's own check blocks the save. With Event, OnChange runs then, although nothing is sent for a held-back
+  removal, and again if the value is picked back (`takeBack`). Its replacement is told once it is saved and the
+  held-back removal is back (`releaseHeldBack` sends it in the same render, so the engine has it to write:
+  `hasPendingChanges`, then `isBusy`; a refused removal is told with the replacement once the refusal is back): until
+  then the column stays empty and the form's check blocks a save, one request longer than with No (more when more
+  than 4 removals were held back together, as they go 4 at a time).
+* **The first selection for a record is no change.** `hostSyncedFor` is the record the names were last worked out for
+  (`""` for a new record). The first selection after the form opens only sets the baseline (`hostText`, `hostIds`),
+  so opening a record never runs OnChange, even when the column on the record is out of date, and names put back then
+  run none either (`quiet`); what the form of an earlier visit noted for the record in `Shown` is dropped (`first`,
+  4.14). The column then shows the selection, so the form's own check sees it. An OnLoad script
+  that reads the column before then gets the value the form loaded, and no OnChange when the names replace it.
+* **A new record's picks count at once.** Before the first save, the column holds the picks of every copy of the field
+  (`picksOnUnsavedForm`), and with Event, OnChange runs at each change of them, before anything is saved: the
+  baseline is set by the first selection, as for any record. The save itself is then no change (below), but a pick
+  the server refuses after it runs OnChange again, for the column without it, once the last write is back (`linked`;
+  none when an OnChange meanwhile already saw the column without it).
+* **A change is a change of the records.** `ids`, the sorted ids, are compared, not the names: a change that leaves
+  the names the same (a column too short for them all, `namesText`, 4.10) still runs OnChange, once for all copies of
+  the field on the form (`show`, 4.14).
+* **A new record just saved** (`justSaved`) compares with the picks of its first save, so the save itself is no change.
+  While its picks are being linked (`linking`: until the last write is back and every outcome is known,
+  `hasPendingChanges`, `isBusy` or `hasUncertain`), the column shows the links saved so far, as for any saved record
+  with No, and no change is reported. The record was saved without the names, and the form reloads it right after the
+  save: had the column kept the names, the platform would replace them with the saved empty value and run OnChange
+  itself (measured in a development environment). Names put back while the picks are being linked run no OnChange
+  (`quiet`); once they are all linked, OnChange runs once if the last OnChange saw other names than the final ones,
+  whether it ran meanwhile, in OnSave, or at the last change before the save (a pick then refused, a change made
+  meanwhile) (`linked`, 4.14), so that its handlers see the selection last.
+* **The column always follows the selection.** Once the links are read, `show` runs at every render and puts the
+  names back whenever the column holds something else (not while the column keeps the form's value, 5.10.1, for
+  example under column security): after the form reloads its data (`formContext.data.refresh`) or discards its
+  changes, after a save reloads the column, and when a script sets it. An emptied required field stays empty and one
+  with a saved value is filled again, so the form's own check always matches the field. With Event, OnChange runs
+  again then (while writes are on their way, once they are done) when an OnChange ran while the other value was
+  there (`show`, 4.14), so that a script's last OnChange
+  sees the selection; a script that keeps rewriting the column less than 2 seconds after the last put-back gets at
+  most 3 such runs in a row, then the names back without OnChange, and a slower one is answered each time (4.14). A
+  reload or Discard that runs no OnChange needs none. Scripts should treat the host column as read-only.
+* **The form's own OnChange after a save.** When the column on the record differs from the names shown (for example
+  with *Copy names into the host column* off, or out of date), the form refreshes the record after its first save,
+  puts the saved value into the column and runs its OnChange; the next render puts the names back within a few
+  milliseconds (measured in a development environment, with both values; later saves ran no OnChange). A reload after
+  the column was changed on the record does the same, and its OnChange can see that value before the names are back.
+  The control does not cause it and cannot prevent it; with Event it runs OnChange again once the names are back.
+* **Another record.** An instance that starts on another record (the platform can reuse one, 3.4.2) forgets the record
+  it worked the names out for (`hostSyncedFor`, in `initialize`): after a new record that the form did not save, the
+  next record's names when it opens are no change, and are never compared with the unsaved record's picks.
+  `initialize` compares with the record of the engine it retires (`previous`), so that *Save & New* while the saved
+  record's picks are still being linked (`hostSyncedFor` is still `""` then) is no change for the next new record
+  either.
+* **Copies of the field, and a field hidden and shown again.** Copies on one form share the column and `Shown`, but
+  each reads the links on its own. Right after a new record's first save each copy shows its own links until it has
+  read them again (`onRecordSaved` does not mark the copies stale), and a change made elsewhere (a subgrid) reaches
+  them at different moments: the column can then change back and forth, and with Event, OnChange can report one
+  copy's part of the selection, or a change twice. After a pick refused at the first save, the copy that reads the
+  links first can find its own `hostIds` and put the names back without OnChange, and the other then finds them in
+  `Shown`: the last OnChange keeps one copy's part, although the column ends right. A copy with No notes what it shows
+  in `Shown` without running OnChange, so a copy with Event then misses that change: copies need the same setting. A
+  business rule that hides and shows the field destroys the instance (5.6), and the column keeps what the old
+  instance showed until the next one draws; that one starts as on opening (`first`), so a change saved meanwhile, a
+  new record's pick refused at a save meanwhile, a held-back removal that `handOverHeld` dropped (its value comes back,
+  5.10.4), or an OnChange run meanwhile, is not reported. The README therefore says to place the field once per form,
+  and not to let a business rule hide it, when scripts use the host column.
+* **No time is added to picks.** The link is saved first; OnChange follows the saved value (measured in a development
+  environment: the link request leaves about 2 ms after the click with each value; OnChange itself takes about
+  0.1 ms). A slow OnChange script still runs after each change.
+* **Why the form gets no value to save.** Giving the names to the form through `getOutputs` (3.4.3) would make the
+  form's save a second writer on the column: it could write older names over those the names copy or its plug-in
+  wrote since, even bring back the name of a removed link, and the form's refresh or Discard could put back names
+  that no longer match the field, so that its required check no longer follows it. Every change would also make the
+  form unsaved. Event gives scripts the selection without any of that; to store the names on the record, use *Copy
+  names into the host column* (5.4).
 
 ## 6. The view in detail
 
@@ -3481,7 +4137,7 @@ so it could not drop down otherwise." The list is placed with `position: fixed` 
 
 The look of the field is controlled by classes on the root element, set in one place.
 
-`control/NToNMultiSelect/src/view.ts`, `applyClasses` (about lines 413–425):
+`control/NToNMultiSelect/src/view.ts`, `applyClasses` (about lines 417–429):
 
 ```ts
 private applyClasses(): void {
@@ -3530,8 +4186,10 @@ just classes, you can restyle any state in `styles.ts` without touching the logi
 
 ### 6.3 Values, "+N" and "less"
 
-**Chips.** `renderChips` builds one `li.ntnms-chip` per value. A chip holds the name (a `span`, or a link with *Open
-selected records*) and, unless the field is read-only, a × button. A chip whose change is not saved yet gets
+**Chips.** `renderChips` shows one `li.ntnms-chip` per value, built by `buildChip`. A chip holds the name (a `span`, or a
+link with *Open selected records*) and, unless the field is read-only, a × button. A chip is kept, by record id, while
+its record stays shown with the same name and link, so a change only adds or removes the chips it touches; an expanded
+field can show thousands. A chip whose change is not saved yet gets
 `is-saving`; the keyboard highlight is `is-current` (a 1 px black border drawn with `::after`). While the field is
 collapsed, at most 50 chips are built (`MAX_COLLAPSED_CHIPS`); the rest are built when the field expands.
 
@@ -3541,7 +4199,7 @@ expanded field the same button says "less", but only when collapsing would hide 
 `measureOverflow` measures twice when the button's own width changed, because the button's width decides how many chips
 fit on the first line. A `ResizeObserver` measures again when the field changes width.
 
-`control/NToNMultiSelect/src/view.ts`, the "+N" / "less" click handler in `wireEvents` (about lines 960–976):
+`control/NToNMultiSelect/src/view.ts`, the "+N" / "less" click handler in `wireEvents` (about lines 997–1013):
 
 ```ts
 this.expanded = !this.expanded;
@@ -3642,7 +4300,7 @@ on ×:
 | ↓ | Opens the list with the first row highlighted; the search box takes the focus. |
 | Typing | Does nothing; the highlight stays. Shortcuts such as Ctrl+S still reach the page. |
 
-`control/NToNMultiSelect/src/view.ts`, `removeWithX` (about lines 1234–1254):
+`control/NToNMultiSelect/src/view.ts`, `removeWithX` (about lines 1272–1292):
 
 ```ts
 private removeWithX(item: Item): void {
@@ -3698,7 +4356,7 @@ A row that is not selected but holds a place toward the limit (its removal is on
 undid is still on its way, or an add of it has an unknown outcome; `ViewState.held`, 4.3) is not blocked at the limit:
 picking it again takes no new place. `drawRow` and `toggle` both ask `holdsPlace`.
 
-`control/NToNMultiSelect/src/view.ts`, `drawRow` and `holdsPlace` (about lines 669–683 and 1557–1560):
+`control/NToNMultiSelect/src/view.ts`, `drawRow` and `holdsPlace` (about lines 706–720 and 1603–1606):
 
 ```ts
 private drawRow(state: ViewState, row: HTMLLIElement, id: string, index: number): void {
@@ -3727,7 +4385,7 @@ function holdsPlace(state: ViewState, id: string): boolean {
 arrow key would be slow. `refreshRows` remembers what it drew (`drawnRows`) and redraws only the rows whose state
 changed.
 
-`control/NToNMultiSelect/src/view.ts`, `refreshRows` (about lines 642–649):
+`control/NToNMultiSelect/src/view.ts`, `refreshRows` (about lines 679–686):
 
 ```ts
 // Otherwise only the rows that were picked or removed, started or finished saving, lost their lighter
@@ -3755,7 +4413,7 @@ While the list is closed, `refreshRows` does nothing at all; `openMenu` brings t
 
 **Load more.** A scroll listener asks for the next page when the user is within 70 px of the end.
 
-`control/NToNMultiSelect/src/view.ts`, `wireEvents` (about lines 1004–1010):
+`control/NToNMultiSelect/src/view.ts`, `wireEvents` (about lines 1041–1047):
 
 ```ts
 this.list.addEventListener("scroll", () => {
@@ -3810,7 +4468,7 @@ keyboard highlight can move through all of them with `aria-activedescendant` whi
 
 Announcements made in one go are read together.
 
-`control/NToNMultiSelect/src/view.ts`, `announce` (about lines 1495–1511):
+`control/NToNMultiSelect/src/view.ts`, `announce` (about lines 1533–1549):
 
 ```ts
 private announce(message: string): void {
@@ -3847,7 +4505,7 @@ time (the form scrolls, a subgrid above it refreshes, a notification appears, th
    (`MENU_MAX_HEIGHT`, 247 px). It opens above only when it does not fit below and there is more room above. The side is
    kept while the list is open, so it never jumps when rows arrive or are filtered.
 
-   `control/NToNMultiSelect/src/view.ts`, `openMenu` (about lines 1433–1438):
+   `control/NToNMultiSelect/src/view.ts`, `openMenu` (about lines 1471–1476):
 
    ```ts
    // Pick the side once, using the tallest the list can get, so it doesn't jump when rows arrive or are filtered.
@@ -3879,7 +4537,7 @@ On a touch screen there is no hover. A tap on the idle field produces, in order:
 link or "+N" is now under the finger. The user never saw those, so acting on them would be a surprise. The view
 remembers whether the chips were already showing when the press started.
 
-`control/NToNMultiSelect/src/view.ts`, `wireEvents` (about lines 829–834):
+`control/NToNMultiSelect/src/view.ts`, `wireEvents` (about lines 866–871):
 
 ```ts
 // Every press starts with pointerdown. For a tap, that is before the emulated mouseenter switches to the chips.
@@ -3899,6 +4557,9 @@ Other touch details:
 * The document listener that closes the list also listens to `pointerdown`, because touch scrolling and some taps
   produce no `mousedown`.
 * Text that arrives without a key press (paste, IME, a phone keyboard) also ends chip navigation (`input` handler).
+* While an input method composes text (Japanese, Chinese, Korean...), its keys belong to it: Enter commits the text,
+  Escape cancels it and the arrows pick a candidate. `onKeyDown` and `onChipsListKey` ignore them (`isComposing`: the
+  event's `isComposing`, or `keyCode` 229).
 * `visibleArea` uses the visual viewport, so the list is placed in the part of the screen the phone keyboard leaves
   free.
 * A `ResizeObserver` measures "+N" again when the field changes width (a rotated phone).
@@ -3914,7 +4575,7 @@ values in `styles.ts` were measured from the native control (see the header comm
 | Hover and focus border | 1 px `#666` |
 | Chips | `#efefef`, 28 px high, × hover `#b3b3b3` |
 | "+N" / "less" | `#2975b2` text |
-| List | border `#5d5a58`, 13 px top padding, 35 px rows, 4 rows visible (140 px) |
+| List | border `#5d5a58`, 13 px top padding, 35 px rows: 4 rows visible under *Select all* (140 px), 5 without it (175 px), so the list keeps its height |
 | Check boxes and chevron | CRM MDL2 glyphs (4.12) |
 | Read-only | `#efefef` box with a border of the same colour |
 | Errors | `#a4262c`, 12 px, with an icon, like a model-driven field notification |
@@ -4009,7 +4670,7 @@ function remount(formContext, name) {
 `VERSION = "__VERSION__"` is a placeholder. `scripts/build.mjs` replaces it with the control version from the manifest
 and writes the result into the solution as the web resource (step 1 in 9.2 shows the code).
 
-The version ends up in the bundle address (`?v=1.0.0`). When the version changes, the address changes, so browsers
+The version ends up in the bundle address (`?v=1.0.1`). When the version changes, the address changes, so browsers
 download the new bundle instead of using a cached old one. The build also checks that the packaged copy contains the
 handler name and the current version. **Edit `formloader/formloader.js`, never the copy under `solution/src/WebResources`**:
 the build overwrites it.
@@ -4078,7 +4739,7 @@ sequenceDiagram
     else the platform is downloading the bundle
         L->>W: wait up to 10 s, then download a copy
     else
-        L->>S: script cc_KV.NToNMultiSelect/bundle.js?v=1.0.0
+        L->>S: script cc_KV.NToNMultiSelect/bundle.js?v=1.0.1
         S-->>W: the bundle runs and registers KV.NToNMultiSelect
     end
     P->>L: OnLoad: onLoad(executionContext, names)
@@ -4139,7 +4800,7 @@ The plug-in has **no configuration of its own**. It reads the settings of the co
 | `ExecuteUpdate`, `ReadOther`, `CopyIntoTarget` | The Update step (8.11) |
 | `ReadRoutes`, `LoadRoutes`, `ReadHosts` | Finds the host records linked to a record that is deleted or renamed (Delete and Update steps) |
 | `Deadline`, `CopiesTime`, `Deadlines` | The 30-second budget that the copies of the deletes and renames of one operation share |
-| `FromCache`, `Cached<T>`, `DropExpiredPlans` | The 2-minute caches |
+| `FromCache`, `Cached<T>`, `DropOldPlans`, `FormSettings`, `FormsVersion`, `WithTables` | The caches: checked every 2 minutes, read in full at least every 30 minutes (8.6) |
 | `SystemService` | The organization service that runs as SYSTEM (8.14) |
 | `BeingDeleted` | Leaves out records that the same operation is deleting |
 
@@ -4202,7 +4863,7 @@ Update step to the name column, they cost nothing on any other table. The steps 
 Every step calls `Execute`. It sends Delete and Update to methods of their own (`ExecuteDelete`, 8.10, and
 `ExecuteUpdate`, 8.11), ignores any other message, and handles Associate and Disassociate itself.
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `Execute` (about lines 69–128):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `Execute` (about lines 74–133):
 
 ```csharp
 public void Execute(IServiceProvider serviceProvider)
@@ -4227,7 +4888,7 @@ public void Execute(IServiceProvider serviceProvider)
     var service = SystemService(serviceProvider);
     var forms = ReadForms(context, service);
     // Links of every other relationship end here, without a service call once the forms are read.
-    if (!forms.TryGetValue(relationship.SchemaName.ToLowerInvariant(), out var hosts)) return;
+    if (!forms.Hosts.TryGetValue(relationship.SchemaName.ToLowerInvariant(), out var hosts)) return;
 
     var tracing = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
     var records = new[] { target }.Concat(related).ToList();
@@ -4295,7 +4956,7 @@ sequenceDiagram
     C->>DV: Associate or Disassociate
     DV->>DV: Write or delete the intersect row (in the transaction)
     DV->>P: PostOperation step, synchronous
-    P->>P: ReadForms from the cache (2 minutes)
+    P->>P: ReadForms from the cache (checked every 2 minutes)
     alt No form copies names for this relationship
         P-->>DV: Return, no service call
     else The relationship copies names
@@ -4328,17 +4989,42 @@ such numbers of records in smaller batches.
 The plug-in reads the settings of the control from the forms. A form's layout and its controls' settings are stored
 as **form XML** in the `systemform` table.
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `LoadForms` (about lines 715–737):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `LoadForms` (about lines 760–808, shortened):
 
 ```csharp
-private static IReadOnlyDictionary<string, Host[]> LoadForms(IOrganizationService service)
+private static FormSettings LoadForms(IOrganizationService service)
 {
-    // RetrieveMultiple returns the published form XML. The like filter leaves out the forms without the control;
-    // an inactive form (formactivationstate 0) isn't shown to anyone, so its settings don't count.
-    var query = new QueryExpression("systemform") { ColumnSet = new ColumnSet("objecttypecode", "formxml") };
-    query.Criteria.AddCondition("formxml", ConditionOperator.Like, "%" + NamesCopyHelpers.ControlName + "%");
+    var version = FormsVersion(service);
+    // The forms that use a control of that name, found through the dependencies Dataverse keeps of each form on
+    // its controls rather than by searching the XML of every form, which can take most of a second in an
+    // environment with many forms. RetrieveMultiple returns the published form XML; an inactive form
+    // (formactivationstate 0) isn't shown to anyone, so its settings don't count.
+    // Page after page: Dataverse returns at most PageSize rows at a time. In the order of the forms' ids, so that
+    // each page starts after the last form of the one before.
+    var query = new QueryExpression("systemform")
+    {
+        ColumnSet = new ColumnSet("objecttypecode", "formxml"),
+        PageInfo = new PagingInfo { Count = PageSize, PageNumber = 1 },
+    };
+    query.AddOrder("formid", OrderType.Ascending);
     query.Criteria.AddCondition("formactivationstate", ConditionOperator.Equal, 1);
-    return service.RetrieveMultiple(query).Entities
+    // Component type 60: a form.
+    var dependency = query.AddLink("dependency", "formid", "dependentcomponentobjectid", JoinOperator.Inner);
+    dependency.LinkCriteria.AddCondition("dependentcomponenttype", ConditionOperator.Equal, 60);
+    var control = dependency.AddLink("customcontrol", "requiredcomponentobjectid", "customcontrolid", JoinOperator.Inner);
+    control.LinkCriteria.AddCondition("name", ConditionOperator.EndsWith, NamesCopyHelpers.ControlName);
+    var forms = new List<Entity>();
+    for (;;)
+    {
+        var page = service.RetrieveMultiple(query);
+        forms.AddRange(page.Entities);
+        if (!page.MoreRecords) break;
+        query.PageInfo.PageNumber++;
+        query.PageInfo.PagingCookie = page.PagingCookie;
+    }
+    var hosts = forms
+        // A form comes once for each dependency found: one on another control of that name too (ITAintBoring's).
+        .GroupBy(form => form.Id).Select(rows => rows.First())
         .SelectMany(form => NamesCopyHelpers.ParseFormXml(form.GetAttributeValue<string>("formxml")).Select(setting => new
         {
             Relationship = setting.RelationshipName.ToLowerInvariant(),
@@ -4353,15 +5039,24 @@ private static IReadOnlyDictionary<string, Host[]> LoadForms(IOrganizationServic
             .Select(byTable => new Host(byTable.Key,
                 byTable.Select(setting => setting.Column).Distinct().OrderBy(column => column, StringComparer.Ordinal).ToArray()))
             .ToArray());
+    return new FormSettings(hosts, version);
 }
 ```
 
-* **One query for the whole environment**: the active forms whose XML contains `.NToNMultiSelect`. The query returns the
-  **published** form XML, so a form change counts once the form is published.
+* **One query for the whole environment**: the active forms that use a control whose name ends with `.NToNMultiSelect`,
+  found through the **dependencies** Dataverse keeps of each form on its controls (`dependency` rows of component type
+  60, a form, on a `customcontrol`). Searching the XML of every form with a `like` filter, as earlier versions did, can
+  take most of a second in an environment with many forms. The query returns the **published** form XML, so a form
+  change counts once the form is published.
+* **Every page**: the query is read page after page (5,000 forms each, in the order of the form ids, with the paging
+  cookie), so an environment with more than 5,000 such forms is read in full.
+* A form comes back once for each matching dependency (another control of the same name, such as another publisher's
+  N:N control, adds one), so the rows are grouped by form id first.
 * The result is a dictionary: **relationship schema name (lower case) → host tables → host columns**. Tables and columns
-  are sorted, which gives `Execute` its fixed order.
-* The query has no paging: Dataverse returns at most 5,000 forms. More matching forms than that is practically never
-  reached; the forms after the first 5,000 would be ignored.
+  are sorted, which gives `Execute` its fixed order. It is kept in a `FormSettings` with the **forms' version** read
+  just before (`FormsVersion`: the newest `versionnumber` of all forms, one row). The version is what the cache checks
+  every 2 minutes (8.6); reading it first means that a form published while the forms are being read counts at the
+  next check.
 
 Each form's XML is parsed by `ParseFormXml`.
 
@@ -4412,52 +5107,63 @@ For orientation, a simplified example of what the parser looks for (not a comple
 ```
 
 **What this means for administrators:** setting *Copy names into the host column* to **No** on every form turns the
-plug-in off for that relationship. A change takes effect after the form is published and the cache has expired
-(within about 2 minutes).
+plug-in off for that relationship. A change takes effect after the form is published and the cache has checked the
+forms' version (within about 2 minutes). Deleting a form does not give the forms a newer version, so a deleted form
+counts at the next full read, within 30 minutes (8.6).
 
-### 8.6 Caches and their 2-minute lifetime
+### 8.6 Caches: checked every 2 minutes, read in full every 30
 
 A plug-in instance is created once and reused, and it may run on several threads at once. Static fields live as long
 as the sandbox worker process that loaded the assembly. The plug-in keeps four caches there:
 
 | Cache | Key | Holds | Lifetime |
 | --- | --- | --- | --- |
-| `Forms` | Organization id | The dictionary from `LoadForms` | 2 minutes (`CacheTime`) |
-| `Plans` | Organization, relationship, host table, host columns | The copy plan (8.7) | 2 minutes; expired plans are dropped when the forms are loaded again (`DropExpiredPlans`) |
-| `Routes` | Organization id | The tables whose names are copied (8.7), built from the cached forms | Rebuilt whenever the forms are loaded again |
+| `Forms` | Organization id | The `FormSettings` from `LoadForms`: the copy settings and the forms' version | Checked every 2 minutes (`CacheTime`) with one query of the forms' version, and read again when it changed; read in full at least every 30 minutes (`MaxCacheTime`) |
+| `Plans` | Organization, relationship, host table, host columns | The copy plan (8.7) | Checked every 2 minutes: only the definitions of its tables and host columns are read again (`WithTables`, one metadata query); loaded in full every 30 minutes. Plans due for a full load, which unused ones are among, are dropped when the forms are read in full (`DropOldPlans`) |
+| `Routes` | Organization id | The tables whose names are copied (8.7), built from the cached forms | Rebuilt whenever the forms are read again or checked |
 | `Deadlines` | `CorrelationId` of a delete or rename operation | The 30-second deadline of the copies of the Delete and Update steps (8.10, 8.11) | Removed at the next delete or rename operation in that worker that starts a deadline, once the deadline is more than 2 minutes past |
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `FromCache` (about lines 997–1012):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `FromCache` (about lines 1093–1112):
 
 ```csharp
-private static T FromCache<TKey, T>(ConcurrentDictionary<TKey, Cached<T>> cache, TKey key, Func<T> load)
+private static T FromCache<TKey, T>(ConcurrentDictionary<TKey, Cached<T>> cache, TKey key, Func<T> load, Func<T, T> renew = null)
+    where T : class
 {
     if (cache.TryGetValue(key, out var cached) && (cached.Expires > Clock() || !cached.StartReload())) return cached.Value;
-    T value;
+    T value = null;
+    var loaded = Clock();
     try
     {
-        value = load();
+        if (cached != null && renew != null && cached.Loaded + MaxCacheTime > loaded) value = renew(cached.Value);
+        if (value != null) loaded = cached.Loaded;
+        else value = load();
     }
     catch
     {
         cached?.ReloadFailed();
         throw;
     }
-    cache[key] = new Cached<T>(value);
+    cache[key] = new Cached<T>(value, loaded);
     return value;
 }
 ```
 
-* A cached value younger than 2 minutes is returned at once.
-* When it has expired, **one** thread loads it again (`StartReload` uses `Interlocked.CompareExchange`); the other
-  threads keep using the old value meanwhile. Every link in the environment reads the forms, so this avoids many
-  identical queries at once.
-* A failed load is never cached: the next caller tries again.
+* A cached value checked or loaded less than 2 minutes ago is returned at once.
+* After that, **one** thread checks it (`StartReload` uses `Interlocked.CompareExchange`); the other threads keep using
+  the old value meanwhile. Every link in the environment reads the forms, so this avoids many identical queries at
+  once.
+* The check is `renew`: for the forms, one query of the forms' version (`FormsVersion`), and the same settings when no
+  form has changed; for a copy plan, a new read of its table definitions only. It returns null when the value is out
+  of date, and the value is then loaded in full (`load`). It is loaded in full anyway once 30 minutes have passed since
+  its last full load (`MaxCacheTime`), which also catches what a check cannot see, such as a deleted form.
+* A failed check or load is never cached: the next caller tries again.
 * Cached values are never changed, only replaced whole, so other threads always read a complete value.
 
-**Why 2 minutes?** It is a balance between cost and freshness. A longer time means fewer queries; a shorter time means
-form changes count sooner. Each sandbox worker has its own caches, so after a form is published, different workers
-may pick up the change at slightly different times, all within about 2 minutes. To change the time, see recipe 10.5.
+**Why 2 and 30 minutes?** It is a balance between cost and freshness. The check every 2 minutes costs one small query,
+so a published form counts within about 2 minutes without reading every form again; the full read every 30 minutes
+bounds what the check cannot see. Each sandbox worker has its own caches, so after a form is published, different
+workers may pick up the change at slightly different times, all within about 2 minutes. To change the times, see
+recipe 10.5.
 
 ### 8.7 Copy plans and routes
 
@@ -4505,7 +5211,7 @@ the tag and the query string (the code is in 4.5). The five parts are: the fixed
 relationship schema name, the logical name of the form's table, the record id (lower case, no braces) and the host
 column's logical name. The controller only passes a tag while the setting is on and the host column is known.
 
-`control/NToNMultiSelect/index.ts`, `linkTag` (about lines 1080–1083):
+`control/NToNMultiSelect/index.ts`, `linkTag` (about lines 1171–1174):
 
 ```ts
 private linkTag(rel: RelationshipInfo, recordId: string): string | undefined {
@@ -4519,7 +5225,7 @@ The tag travels as the Web API's `tag` query parameter, for example
 Dataverse hands this value to the plug-ins of the request in `SharedVariables["tag"]`. `SharedVariables` is a property
 bag of the execution context that carries values between the steps of one request.
 
-**How the plug-in reads it.** `plugin/NamesCopy/NamesCopyPlugin.cs`, `ControlCopy` (about lines 166–179):
+**How the plug-in reads it.** `plugin/NamesCopy/NamesCopyPlugin.cs`, `ControlCopy` (about lines 171–184):
 
 ```csharp
 private static ControlColumn ControlCopy(IPluginExecutionContext context, string relationshipName)
@@ -4550,7 +5256,7 @@ would leave the host column alone: the column would stay out of date. So the plu
 user who made the link could write that column themselves**. `Execute` asks `ControlMayWrite` only for the record the
 tag names (8.3).
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `ControlMayWrite` (about lines 191–215):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `ControlMayWrite` (about lines 196–220):
 
 ```csharp
 private static bool ControlMayWrite(IOrganizationService service, IPluginExecutionContext context, CopyPlan plan, ControlColumn control)
@@ -4601,7 +5307,7 @@ how a table is owned. Measured in a development environment, no table owned by t
 for it, and 17 of the 384 user-owned tables (owned by users or teams) had none either, for example `activitypointer`.
 A `RetrievePrincipalAccess` request for such a table fails, and a failed request ends the link's transaction. So
 `LoadPlan` looks for that message filter of the host table when it builds the copy plan, and stores the answer as
-`PrincipalAccess`. `plugin/NamesCopy/NamesCopyPlugin.cs`, `SupportsPrincipalAccess` (about lines 222–229):
+`PrincipalAccess`. `plugin/NamesCopy/NamesCopyPlugin.cs`, `SupportsPrincipalAccess` (about lines 227–234):
 
 ```csharp
 private static bool SupportsPrincipalAccess(IOrganizationService service, string table)
@@ -4616,9 +5322,9 @@ private static bool SupportsPrincipalAccess(IOrganizationService service, string
 
 The query asks for at most one message filter whose primary table is the host table and whose message
 (`sdkmessage`) is `RetrievePrincipalAccess`. Unlike a request that the table does not support, it does not fail for
-any table: it finds no row. It runs when the copy plan is loaded, so at most once every 2 minutes for each
+any table: it finds no row. It runs when the copy plan is loaded in full, so at most once every 30 minutes for each
 relationship, host table and host columns in each sandbox worker (8.6), and never on a link that finds its plan in the
-cache.
+cache or only checks it.
 
 **One request, and never a failed one.** The check costs at most one request, only for a tagged link, and none when
 the column has column security or the table gets no check. It runs inside the link's transaction, where a failed
@@ -4655,7 +5361,7 @@ about 70 ms each (8.15).
 
 ### 8.9 Rebuild: writing the names
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `Rebuild` (about lines 872–905):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `Rebuild` (about lines 961–994):
 
 ```csharp
 private static void Rebuild(IOrganizationService service, ITracingService tracing, CopyPlan plan, Guid id, LinkedName rename = null)
@@ -4699,7 +5405,7 @@ private static void Rebuild(IOrganizationService service, ITracingService tracin
 5. **`rename`** is only given by the Update step (8.11): a linked record renamed in this transaction, whose new name is
    not saved yet. Both reads of the links get it.
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `ReadLinks` (about lines 922–948):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `ReadLinks` (about lines 1011–1037):
 
 ```csharp
 private static List<LinkedName> ReadLinks(IOrganizationService service, CopyPlan plan, Guid id, LinkedName rename = null)
@@ -4796,7 +5502,7 @@ sequenceDiagram
     DV-->>C: Commit, or roll back if step 2 threw an error
 ```
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `ExecuteDelete` (about lines 290–297):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `ExecuteDelete` (about lines 302–309):
 
 ```csharp
 private static void ExecuteDelete(IServiceProvider serviceProvider, IPluginExecutionContext context)
@@ -4835,7 +5541,7 @@ private static void ExecuteDelete(IServiceProvider serviceProvider, IPluginExecu
 cascaded deletes, and rolls it back. The copies of one delete or rename operation therefore get a budget of 30 seconds
 (`CopiesTime`). The Delete steps and the Update step (8.11) share it.
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `Deadline` (about lines 413–431):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `Deadline` (about lines 425–443):
 
 ```csharp
 private static DateTime Deadline(IPluginExecutionContext context)
@@ -4913,7 +5619,7 @@ sequenceDiagram
     DV-->>C: Commit, or roll back if the step threw an error
 ```
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `ExecuteUpdate` (about lines 444–505):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `ExecuteUpdate` (about lines 456–517):
 
 ```csharp
 private static void ExecuteUpdate(IServiceProvider serviceProvider, IPluginExecutionContext context)
@@ -5011,7 +5717,7 @@ Step by step:
 6. **Rewrite each record.** `Rebuild(..., rename)` writes the names of each host record (8.9). The records left when
    the deadline has passed keep the old name, and their number is traced.
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `ReadOther` (about lines 522–527):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `ReadOther` (about lines 534–539):
 
 ```csharp
 private static Entity ReadOther(IOrganizationService service, CopyPlan plan, Guid id)
@@ -5027,7 +5733,7 @@ As in `ReadRecord`, a query rather than a `Retrieve`: a record that is not found
 
 **The new name in place of the saved one.** In PreOperation the new name is not saved yet, so the join to the renamed
 record's table in `ReadLinks` still returns the old name. `ReadLinks` therefore puts `rename` in place of the link to
-the renamed record. `plugin/NamesCopy/NamesCopyPlugin.cs`, `ReadLinks` (about line 941; the whole function is in 8.9):
+the renamed record. `plugin/NamesCopy/NamesCopyPlugin.cs`, `ReadLinks` (about line 1030; the whole function is in 8.9):
 
 ```csharp
 links.Add(rename != null && rename.Id == other ? rename : new LinkedName(other, name));
@@ -5044,7 +5750,7 @@ would change the record's row version before the update being saved is written, 
 row version. `CopyIntoTarget` puts the copy into the `Target` of the update being saved instead, so that one save
 writes both the new name and its copy.
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `CopyIntoTarget` (about lines 512–516):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `CopyIntoTarget` (about lines 524–528):
 
 ```csharp
 private static void CopyIntoTarget(IOrganizationService service, CopyPlan plan, Entity target, LinkedName rename)
@@ -5142,7 +5848,7 @@ The plug-in writes short lines to the **tracing service** (`ITracingService`). D
 
 ### 8.14 Running as SYSTEM, and why
 
-`plugin/NamesCopy/NamesCopyPlugin.cs`, `SystemService` (about lines 254–262):
+`plugin/NamesCopy/NamesCopyPlugin.cs`, `SystemService` (about lines 259–267):
 
 ```csharp
 /// <summary>
@@ -5212,6 +5918,10 @@ these times are not comparable with the 232 ms in the next table), a delete of a
 10.0 s instead of 8.6 s, and a rename of a record linked to 10 records 1.1 s instead of 0.9 s. The Update step the
 page makes is not called for that write: it is limited to the linked table and its name column.
 
+**After a pause.** The first link after more than 2 minutes without one checks the cached forms (8.6). With the check
+(one query of the forms' version, and the table definitions of the copy plans) it took 0.46 s in a development
+environment; reading every form and plan again, as earlier versions did, took 1.20 s.
+
 **When the step does its work**
 
 | What happens | Without the step(s) | With the step(s) |
@@ -5227,8 +5937,8 @@ page makes is not called for that write: it is limited to the linked table and i
 
 Links made in the control are left to the control (8.8): 48 of them, sent 4 at a time, took 2.18 s with the plug-in
 installed, against 2.08 s without it. The tag check (8.8) made no measurable difference to them. The control's own
-names copy (5.4.3) was written about 120 ms after the link was saved, against 67 ms without its read of the saved
-links; picking is not slower.
+names copy (5.4.3) was written about 128 ms after the link was saved, with its read of the record and the saved links,
+against 67 ms without a read; picking is not slower.
 
 Deletes and renames rewrite about 10 records a second, up to the **30-second budget per operation** (`CopiesTime`,
 8.10): roughly 300–350 records. At most 5,000 linked records are read per relationship. The records left after that
@@ -5344,7 +6054,6 @@ Rules:
   their links change. Fill them once, for example with a flow.
 * Imports or integrations that bypass custom plug-ins (the `BypassCustomPluginExecution` option, or a data migration
   with plug-ins turned off).
-* More than 5,000 forms with the control: only the first 5,000 are read.
 
 ### 8.17 The steps page
 
@@ -6179,10 +6888,10 @@ writeFileSync(solutionXmlPath, solutionXml);
 ```
 
 * The form library's `VERSION = "__VERSION__"` becomes the control version. The library adds it to the bundle address
-  (`?v=1.0.0`), so browsers download a new bundle after an upgrade.
+  (`?v=1.0.1`), so browsers download a new bundle after an upgrade.
 * The copy is written to the file name SolutionPackager expects: the web resource name without punctuation, followed by
   its id.
-* The solution version becomes the control version plus `.0` (1.0.0 → 1.0.0.0).
+* The solution version becomes the control version plus `.0` (1.0.1 → 1.0.1.0).
 
 **Step 3: build and package.** (about lines 41–44)
 
@@ -6539,7 +7248,7 @@ a solution zip. Two settings matter.
 <Descriptions>
   <Description description="Many-to-many multi-select field control that looks like the native multi-select choice field." languagecode="1033" />
 </Descriptions>
-<Version>1.0.0.0</Version>
+<Version>1.0.1.0</Version>
 <!-- Solution Package Type: Unmanaged(0)/Managed(1)/Both(2)-->
 <Managed>2</Managed>
 <Publisher>
@@ -6760,7 +7469,7 @@ were measured from the native multi-select choice control, so both look the same
 | Keyboard highlight of a chip or row | `.is-current::after` | `border:1px solid #000` |
 | Chip being saved | `.ntnms-chip.is-saving` | `opacity:.6` |
 | List rows, selected rows | `.ntnms-option`, `.ntnms-option.is-selected` | `min-height:35px`, `background:#bdbdbd` |
-| List height (4 rows) | `.ntnms-list` | `max-height:140px` (also `LIST_MAX_HEIGHT` in `view.ts`) |
+| List height (4 rows, 5 without *Select all*) | `.ntnms-list`, `.ntnms-menu.is-without-select-all .ntnms-list` | `max-height:140px`, `max-height:175px` (also `LIST_MAX_HEIGHT` and `ROW_HEIGHT` in `view.ts`) |
 | + New button | `.ntnms-menu .ntnms-create` | `color:#2975b2` |
 | Read-only field | `.ntnms.is-disabled` | `background-color:#efefef` |
 | Error and hint under the field | `.ntnms-error`, `.ntnms-hint` | `color:#a4262c` (error), `color:#616161` (hint) |
@@ -6769,14 +7478,14 @@ were measured from the native multi-select choice control, so both look the same
 The icons are characters of the **CRM MDL2** icon font (`GLYPH` at the end of the file); they are private-use
 characters and may look empty in your editor.
 
-**When you change the CSS**, also give `STYLE_ID` (`"ntnms-styles-v8"`) a new value, for example
-`"ntnms-styles-v9"`. `ensureStyles` injects nothing when an element with that id is already on the page, so another
+**When you change the CSS**, also give `STYLE_ID` (`"ntnms-styles-v9"`) a new value, for example
+`"ntnms-styles-v10"`. `ensureStyles` injects nothing when an element with that id is already on the page, so another
 build of this control on the same page could otherwise keep its CSS.
 
-If you change the list height, change `LIST_MAX_HEIGHT` in `view.ts` too: it is used to place the list above or below
-the field.
+If you change the list height, change `LIST_MAX_HEIGHT` (and `ROW_HEIGHT`, for the five-row list without *Select all*) in
+`view.ts` too: they are used to place the list above or below the field.
 
-**Check:** reload with Ctrl+F5, then in the developer tools find `<style id="ntnms-styles-v9">` in `<head>` and inspect
+**Check:** reload with Ctrl+F5, then in the developer tools find `<style id="ntnms-styles-v10">` in `<head>` and inspect
 the field. Check the idle, hover, focused, open, read-only and high contrast looks (chapter 11).
 
 ### 10.4 Add a new setting
@@ -6825,7 +7534,8 @@ the field. Check the idle, hover, focused, open, read-only and high contrast loo
 designer, or null. A setting that changes what the plug-in copies needs more than that line: add it to `CopySetting`,
 carry it through `LoadForms` into `Host`, and add it to the key of the `Plans` cache in `CopyPlanOf`, so that forms
 with different values get different plans. If it matters for deletes too, add it to the notes of the Delete steps
-(8.10), which carry everything step 2 needs. A changed value then counts within 2 minutes, like any form change (8.6).
+(8.10), which carry everything step 2 needs. A changed value then counts within about 2 minutes, like any form change
+(8.6).
 
 **Check:** in the form designer, the control's settings show *Show item count*. Set it to No, save and publish, open a
 record and open the list of a relationship whose related table has at most 100 active records (*Select all* only
@@ -6848,12 +7558,13 @@ lists them all, with the file, the value and what to watch out for. The ones cha
   user; keep it low.
 * **Timeouts and retries** in `src/dataverse.ts`: `READ_TIMEOUT_MS`, `WRITE_TIMEOUT_MS`, `MAX_RETRIES` and
   `BACKOFF_MS`. Keep the write timeout a little above the 2-minute limit of synchronous plug-ins (4.6).
-* **Plug-in** constants in `NamesCopyPlugin.cs`: `CacheTime` (2 minutes; shorter means more queries on every link),
+* **Plug-in** constants in `NamesCopyPlugin.cs`: `CacheTime` (2 minutes between the checks of the caches; shorter
+  means more queries on every link), `MaxCacheTime` (30 minutes between full reads of the caches),
   `CopiesTime` (30 seconds, the budget of the copies of one delete or rename operation, shared by the Delete and Update
   steps; must stay well under the 2-minute limit of the whole operation) and `PageSize` (5,000, the Dataverse
   maximum).
 
-`control/NToNMultiSelect/index.ts`, the constants at the top of the file (about lines 12–23):
+`control/NToNMultiSelect/index.ts`, the constants at the top of the file (about lines 13–24):
 
 ```ts
 const CONTROL_NAME = "KV.NToNMultiSelect";
@@ -7008,7 +7719,8 @@ on **All** (12.4), deletes and updates of other tables leave no entry of `NToNMu
 
 ### 10.9 Enforce rules on the server
 
-The view, the filters, *Show inactive records* and *Maximum selections* only apply in the control. *Maximum
+The view, the filters, *Show inactive records*, *Maximum selections* and a required host column (5.10) only apply
+in the control. *Maximum
 selections* is also checked by each copy of the field on its own: two copies of the same field on one form, two
 browser tabs or two users can together go over the limit (5.3). To make a rule hold everywhere (subgrids, imports,
 flows, the Web API, and every copy of the field), use a plug-in on **Associate**, **PreValidation**, that throws an
@@ -7070,6 +7782,13 @@ Prepare:
 | *Maximum selections* reached | Other rows are greyed out with a note; + New is hidden |
 | *Maximum selections* reached, slow network (Network throttling): remove a value with its ×, and open the list at once | Until the removal is saved, the other rows stay greyed and + New and *Select all* stay hidden; the removed value can be picked again |
 | Remove a value with its × | The field keeps its focused look and the next value has a black border, as in the screenshot in 6.4.2 |
+| Required host column: remove the last value | It disappears and the form's "required" message blocks Save; nothing is sent (Network tab); leaving without saving keeps the value |
+| Required host column: then pick another value | The new value is saved first, then the old one is removed |
+| Required host column: remove a value that leaves one | One read of the links (Network tab), then the removal |
+| Required host column, two tabs: remove a value in tab 1, then in tab 2 the value that would leave one | Tab 2 reads first and holds the removal: the record keeps a value, and tab 2 blocks Save |
+| Required host column, new record: Save without a pick, then pick and Save | Blocked first; then saved, and the picks are linked |
+| Required host column, quick create or a dialog | "Save the record first ...": the record saves without a value (the requirement is lifted until then) |
+| Required host column with a copy in the header or a process stage | The copy is read-only and shows the saved names |
 
 After an ×: ← and → move the highlight (the first and last value keep it), Delete or Backspace removes the highlighted
 value, typing does nothing, Escape collapses an expanded field, Tab moves to the search box, Enter opens the record
@@ -7251,6 +7970,23 @@ In a development environment with `NToNMultiSelectWithPlugin` installed unmanage
 | Choose your solution in the list, reload the page, tick a table without steps, **Create** | Choosing logs "New steps go into `<your solution>`."; after the reload your solution is still chosen; **Create** logs "... added to `<your solution>`." for each new step; steps that already existed stay where they are |
 | Where the page is in no unmanaged solution (for example `NToNMultiSelectWithPlugin` installed managed): **Create** | The note says "This page is in no unmanaged solution here, ..."; **Create** first asks with the test or production warning (8.17.12); the steps go into `NToNMultiSelectTableSteps`, made with the publisher of a solution that contains the plug-in |
 
+### 11.16 Selection on the form
+
+Set *Selection on the form* = Event and add an OnChange handler to the host column that writes `getValue()` to the
+browser console (5.10.6 gives the rules):
+
+| Test | Expected |
+| --- | --- |
+| Open a record with values | No OnChange; the column holds the names |
+| Pick a value; remove a value | One OnChange each, once the link is saved and once the removal has gone through, with the new names |
+| *Select all* | One OnChange for the whole batch |
+| A pick the server refuses (a user without Append To on the related table) | No OnChange; the column keeps the saved names |
+| A required host column: remove the last value, then pick it again | OnChange at once with an empty column and nothing sent; OnChange again with the name |
+| A new record: pick two values, then save | OnChange at each pick; none for the save; the names stay in the column |
+| A script that writes the column and runs `fireOnChange` | OnChange again with the names; a script that does so after every OnChange gets 3 such runs in a row, then the names back without OnChange |
+| `formContext.data.refresh(false)` on a record whose column is right | No OnChange; the names stay |
+| *Selection on the form* = No | Never an OnChange, and the column shows the same names |
+
 ---
 
 ## 12. Debugging and troubleshooting
@@ -7263,7 +7999,7 @@ on it:
 | Prefix | Who | Examples |
 | --- | --- | --- |
 | `[KV.NToNMultiSelect]` | The control | `initialisation failed`, `loading related records failed`, `add failed for <id>`, `remove failed for <id>`, `copying the names into the host column failed`, `loading options failed`, `searching failed`, `loading more records failed`, `checking the new record against the list failed`, `opening the record <id> failed` |
-| `[KV.NToNMultiSelect]` (warning) | The control | The host column is Business Required; the host column's logical name is not available |
+| `[KV.NToNMultiSelect]` (warning) | The control | The host column's logical name is not available |
 | `[KV.NToNMultiSelect loader]` | The form library | `Could not download cc_KV.NToNMultiSelect/bundle.js.`, `KV.NToNMultiSelect bundle loaded but did not register the control.` |
 
 Each error line is followed by the error object, with the Web API's message and code.
@@ -7281,8 +8017,8 @@ Developer tools → **Network**, filter on `api/data`. The control's requests:
 | View | `GET .../savedqueries?$select=savedqueryid,name,fetchxml,returnedtypecode&$filter=...` |
 | Link | `POST .../<entity set>(<id>)/<navigation property>/$ref` (with `?tag=...` while *Copy names* = Yes) |
 | Unlink | `DELETE .../<entity set>(<id>)/<navigation property>(<related id>)/$ref` (with `?tag=...`) |
-| Names copy | `GET` of the saved links, then `PATCH .../<entity set>(<id>)` with `If-Match: *` and the host column, sent with `keepalive` |
-| Form library | `GET <environment URL>/webresources/cc_KV.NToNMultiSelect/bundle.js?v=1.0.0` |
+| Names copy | `GET .../<entity set>(<id>)?$select=<host column>&$expand=<navigation property>(...)` (the record and its links, one request), then `PATCH .../<entity set>(<id>)` with `If-Match: <ETag>` and the host column, sent with `keepalive`; a `412` answer means the record changed meanwhile, and the copy reads again |
+| Form library | `GET <environment URL>/webresources/cc_KV.NToNMultiSelect/bundle.js?v=1.0.1` |
 
 A request's **Response** tab shows the Web API's error (`error.code`, `error.message`).
 
@@ -7374,8 +8110,8 @@ request from your fork, on the repository, and say what you changed and how you 
 
 | Version | Where | How it changes |
 | --- | --- | --- |
-| Control version, for example `1.0.0` | `version` on `<control>` in `ControlManifest.Input.xml` | By hand. **This drives everything else** |
-| Solution version, for example `1.0.0.0` | `solution/src/Other/Solution.xml` | Written by `build.mjs` (control version + `.0`), used by both solutions |
+| Control version, for example `1.0.1` | `version` on `<control>` in `ControlManifest.Input.xml` | By hand. **This drives everything else** |
+| Solution version, for example `1.0.1.0` | `solution/src/Other/Solution.xml` | Written by `build.mjs` (control version + `.0`), used by both solutions |
 | Form library `VERSION` | The web resource copy | Written by `build.mjs` |
 | Plug-in assembly version `1.0.0.0` | `plugin/NamesCopy/NamesCopy.csproj` (`<Version>`) and the registration files (`Version=1.0.0.0`) | By hand, rarely |
 
@@ -7442,8 +8178,8 @@ not create it (13.3).
 
 ### 13.5 The same-version caveat
 
-When a build keeps the control version of a copy that is already installed (for example a new build of 1.0.0 over an
-installed 1.0.0), Dataverse keeps the old code component. Environments that already have that version must remove the
+When a build keeps the control version of a copy that is already installed (for example a new build of 1.0.1 over an
+installed 1.0.1), Dataverse keeps the old code component. Environments that already have that version must remove the
 old copy first:
 
 1. Note the control's settings on each form that uses it, and whether the form uses the form library (handler
@@ -7505,6 +8241,7 @@ The tables in this appendix collect what the chapters explain one piece at a tim
 | `hideSubgrids` | Hide related subgrids | `Enum` (0 No, 1 Yes) | 0 (No) |
 | `placeholder` | Placeholder (optional) | `SingleLine.Text` | empty = "Select or search options" |
 | `writeSummary` | Copy names into the host column | `Enum` (0 No, 1 Yes) | 0 (No) |
+| `formSelection` | Selection on the form | `Enum` (0 No, 1 Event) | 0 (No) |
 | `searchMode` | Search mode for large tables | `Enum` (0 Starts with, 1 Contains) | 0 (Starts with) |
 | `openOnClick` | Open list on click | `Enum` (0 No, 1 Yes) | 0 (No) |
 | `openRecords` | Open selected records | `Enum` (0 No, 1 Yes) | 0 (No) |
@@ -7544,7 +8281,8 @@ The limits, timings and fixed names worth knowing, with the file each is in (the
 | `QUERY_TOO_EXPENSIVE_CODES` | `0x80048573`, `0x80048574`, `0x80048575`, `0x80048644`, `0x80048544`, `0x80048744`, `0x80048745` | `src/dataverse.ts` | Error codes shown as "This search is too slow for this table ..." | |
 | (literal in the constructor) | `/api/data/v9.2` | `src/dataverse.ts` | Web API version | |
 | `MAX_PARALLEL` | 4 | `src/syncEngine.ts` | Link requests in flight at once | Dataverse limits the concurrent requests of each user; keep it low |
-| `LIST_MAX_HEIGHT` | 140 | `src/view.ts` | Height of the list's scrolling part (4 rows of 35 px) | Keep in line with `.ntnms-list` in `styles.ts` |
+| `LIST_MAX_HEIGHT` | 140 | `src/view.ts` | Height of the list's scrolling part under *Select all* (4 rows of 35 px) | Keep in line with `.ntnms-list` in `styles.ts` |
+| `ROW_HEIGHT` | 35 | `src/view.ts` | Height of a row; without *Select all* the list shows one more (175 px) | Keep in line with `.ntnms-menu.is-without-select-all .ntnms-list` |
 | `MENU_MAX_HEIGHT` | 247 (13 + 35 + 22 + 140 + 35 + 2) | `src/view.ts` | Tallest the whole list can get; used to choose above or below | |
 | `MAX_COLLAPSED_CHIPS` | 50 | `src/view.ts` | Chips built while the field is collapsed (and read-only names shown as links) | |
 | `MAX_SPOKEN_NAMES` | 10 | `src/view.ts` | Names spoken in the selection summary before only the count is said | |
@@ -7553,12 +8291,16 @@ The limits, timings and fixed names worth knowing, with the file each is in (the
 | `OVERLAY` | CSS selector | `src/formBridge.ts` | Containers (dialogs, quick create, side panes) where `Xrm.Page` is not the control's form | |
 | `NAMES_SHOWN` | 12 | `src/fetchQuery.ts` | Names listed in a "not found" message | |
 | `SEPARATOR` | `"; "` | `src/namesCopy.ts` | Between names in the host column copy | The plug-in's `Separator` must be the same (10.6) |
-| `STYLE_ID` | `"ntnms-styles-v8"` | `src/styles.ts` | Id of the injected style sheet | Change it when the CSS changes (3.6) |
+| `MAX_CONFLICTS` | 3 | `src/namesCopy.ts` | Writes of the names copy refused because the record changed meanwhile (412) that are read and tried again; after that the copy reports that the names could not be copied (5.4) | |
+| `PUT_BACK_LIMIT` | 3 | `src/hostField.ts` | OnChange runs, in a row, for names put back over a value an OnChange saw (*Selection on the form* = Event, 4.14) | Stops a script that rewrites the column after each OnChange |
+| `PUT_BACK_WINDOW_MS` | 2000 | `src/hostField.ts` | A put-back within this time of the one before continues the row of `PUT_BACK_LIMIT`; after this time without one, the count starts again | A script whose rewrites put the names back further apart than this is answered each time, and so runs on |
+| `STYLE_ID` | `"ntnms-styles-v9"` | `src/styles.ts` | Id of the injected style sheet | Change it when the CSS changes (3.6) |
 | `LANGUAGES` | French: 1036, 3084, 2060, 4108, 5132, 6156 | `src/strings.ts` | Language ids per translation; anything else is English | |
 | `CONTROL`, `BUNDLE`, `VERSION` | `"KV.NToNMultiSelect"`, `"cc_KV.NToNMultiSelect/bundle.js"`, stamped version | `formloader/formloader.js` | What the form library loads | `VERSION` is written by `build.mjs` |
 | `STATE_KEY`, `REMOUNTS_KEY` | `"__pcfLoader:" + CONTROL`, `"__pcfRemounts:" + CONTROL` | `formloader/formloader.js` | App-window keys of the shared download promise and of the remount counts | Named after the control, so loaders of different controls never share state |
 | (literals in `formloader.js`) | 10000 ms (checked every 100 ms), 200 ms, 2, 400 ms and 1500 ms | `formloader/formloader.js` | Wait for the platform's own download; hide/show pause; remounts per control and record; extra checks after OnLoad | |
-| `CacheTime` | 2 minutes | `plugin/NamesCopy/NamesCopyPlugin.cs` | Lifetime of the cached forms and copy plans | Shorter means more queries on every link |
+| `CacheTime` | 2 minutes | `plugin/NamesCopy/NamesCopyPlugin.cs` | How often the cached forms and copy plans are checked (8.6) | Shorter means more queries on every link |
+| `MaxCacheTime` | 30 minutes | `plugin/NamesCopy/NamesCopyPlugin.cs` | How often the cached forms and copy plans are read in full, whatever the checks found | Bounds how long a deleted form counts |
 | `CopiesTime` | 30 seconds | `plugin/NamesCopy/NamesCopyPlugin.cs` | Budget of the copies of one delete or rename operation, shared by the Delete and Update steps | Must stay well under the 2-minute limit of the whole operation |
 | `PageSize` | 5000 | `plugin/NamesCopy/NamesCopyPlugin.cs` | Page size of `ReadLinks`, and the most host records `ReadHosts` reads per relationship | 5,000 is the Dataverse maximum |
 | `ControlTag` | `"NToNMultiSelect\|"` | `plugin/NamesCopy/NamesCopyPlugin.cs` | What a tag of the control starts with | Must match `linkTag` in `relatedData.ts` |
@@ -7593,14 +8335,15 @@ related table's primary id and name columns.
 | 4 | GET | `EntityDefinitions(LogicalName='<related table>')/Attributes(LogicalName='statecode')?$select=LogicalName` | Start-up, to know whether "active" is `statecode eq 0` (not for the User table). |
 | 5 | GET | `savedqueries?$select=savedqueryid,name,fetchxml,returnedtypecode&$filter=<match> and returnedtypecode eq '<related table>' and statecode eq 0`, where `<match>` is `name eq '<view>'` or, for an id, `savedqueryid eq <id>` | When *Records from view* is set. Once per page. |
 | 6 | GET | `savedqueries?$select=returnedtypecode&$filter=<match> and statecode eq 0&$top=1` and `savedqueries?$select=savedqueryid,name&$filter=returnedtypecode eq '<related table>' and statecode eq 0 and (querytype eq 0 or querytype eq 64)&$orderby=name asc` | Only when 5 finds nothing, to word the error (the second only for a name, not an id). |
-| 7 | GET | `<set>(<record id>)/<nav>?$select=<id col>,<name col>&$orderby=<name col> asc,<id col> asc` with `Prefer: odata.maxpagesize=5000`, following `@odata.nextLink` | Record open; re-reads (subgrid change, reconnect, failed batch, after a new record's first save; a failed re-read again after 1, 3 and 9 seconds while an add of unknown outcome holds a place); before every names copy write. |
+| 7 | GET | `<set>(<record id>)/<nav>?$select=<id col>,<name col>&$orderby=<name col> asc,<id col> asc` with `Prefer: odata.maxpagesize=5000`, following `@odata.nextLink` | Record open; re-reads (subgrid change, reconnect, failed batch, after a new record's first save, another copy of the field changed the links; a failed re-read again after 1, 3 and 9 seconds while a write of unknown outcome or a removal waiting for a read needs one); before a removal that leaves a required field with one value (5.10.3). |
+| 7b | GET | `<set>(<record id>)?$select=<host column>&$expand=<nav>($select=<id col>,<name col>;$orderby=<name col> asc,<id col> asc)` with `Prefer: odata.maxpagesize=5000` and `If-None-Match: null`; more links from `<nav>@odata.nextLink` | Before every names copy write: the column as saved, the record's version (`@odata.etag`) and the saved links, in one request (5.4.3). |
 | 8 | GET | `<target set>?$select=<id col>,<name col>&$orderby=<name col> asc,<id col> asc&$filter=<active> and (<extra filter>) and <id col> ne <record id> and startswith(<name col>,'<term>')` with `Prefer: odata.maxpagesize=500` (first page) or `100` (search); next pages from `@odata.nextLink` | The list, without a view or FetchXML. Each filter part only when it applies; `contains` instead of `startswith` with *Search mode* = Contains; the `ne` part only for a self-referencing relationship. |
 | 9 | GET | `<target set>?fetchXml=<encoded FetchXML with count and page>` with `Prefer: odata.include-annotations="Microsoft.Dynamics.CRM.fetchxmlpagingcookie,Microsoft.Dynamics.CRM.morerecords"` | The list, with a view or FetchXML. Next pages: the same with `page` + 1 and `paging-cookie`. |
 | 10 | GET | `<target set>?$select=<id col>&$filter=<list filters> and <id col> eq <new id>`, or `<target set>?fetchXml=<list query with count 1 and an id condition>` | After *+ New*: is the new record offered by the list? |
 | 11 | POST | `<set>(<record id>)/<nav>/$ref[?tag=<tag>]` with body `{"@odata.id": "<api URL>/<target set>(<target id>)"}` | Each pick (associate). The tag only while *Copy names* is Yes. |
 | 12 | GET | `<set>(<record id>)/<nav>?$select=<id col>&$filter=<id col> eq <target id>` | Only when 11 answered "already exists", to check the link is really there. |
 | 13 | DELETE | `<set>(<record id>)/<nav>(<target id>)/$ref[?tag=<tag>]` | Each removal (disassociate). "Not found" counts as done. |
-| 14 | PATCH | `<set>(<record id>)` with body `{"<host column>": "<names>"}` (or `null`) and `If-Match: *`, sent with fetch `keepalive` (up to 60,000 bytes) | The names copy, after request 7, when the text changed. |
+| 14 | PATCH | `<set>(<record id>)` with body `{"<host column>": "<names>"}` (or `null`) and `If-Match: <the version from 7b>` (`*` without one), sent with fetch `keepalive` (up to 60,000 bytes) | The names copy, after request 7b, when the text changed. Refused with 412 when the record changed after 7b: 7b and 14 are then sent again, up to 3 times. |
 
 The form library makes one more request, outside the Web API: `GET <environment URL>/webresources/cc_KV.NToNMultiSelect/bundle.js?v=<version>`
 (a script tag), only when the platform did not deliver the bundle.
@@ -7610,17 +8353,17 @@ The form library makes one more request, outside the Web API: `GET <environment 
 The plug-in uses the organization service inside Dataverse, as the SYSTEM user (8.14). Calls 2 to 4 and 6 to 11
 happen only for a relationship or table that a form copies. Calls 1 and 5 are the exception: call 1 runs for any link,
 and for a delete or rename that a Delete or Update step of the steps page is called for, when the cached forms are
-missing or expired; call 5 runs for such a delete or rename after the forms were loaded again (so each at most about
-once every 2 minutes per sandbox worker). After that, links of anything else end with a dictionary lookup, and
-Dataverse does not call the Delete and Update steps for the deletes and updates of other tables at all.
+missing or due for a check; call 5 runs for such a delete or rename after the forms were read again or checked (so
+each at most about once every 2 minutes per sandbox worker). After that, links of anything else end with a dictionary
+lookup, and Dataverse does not call the Delete and Update steps for the deletes and updates of other tables at all.
 
 | # | Call | Function | When |
 | --- | --- | --- | --- |
-| 1 | `RetrieveMultiple` on `systemform`: columns `objecttypecode` and `formxml`, where `formxml` is like `%.NToNMultiSelect%` and `formactivationstate` = 1 | `LoadForms` | When the cached forms of the organization are missing or older than 2 minutes (one thread reloads them) |
-| 2 | `RetrieveRelationship` by schema name | `LoadPlan` | When the copy plan of a relationship, host table and host columns is missing or older than 2 minutes |
-| 3 | `RetrieveMetadataChanges`: the host table and the other table, with their primary id and name columns, ownership type and privileges, and the host columns (all properties) | `TableMetadata`, called by `LoadPlan` | With 2 |
+| 1 | `RetrieveMultiple` on `systemform`: the newest `versionnumber`, one row (`FormsVersion`); then, when the forms are read in full, the active forms (`formactivationstate` = 1) with a `dependency` on a `customcontrol` whose name ends with `.NToNMultiSelect`, columns `objecttypecode` and `formxml`, in pages of 5,000 by form id with the paging cookie | `FormsVersion`, `LoadForms` | The version: when the cached forms are due for a check, every 2 minutes (one thread checks). The forms: when they are missing, when the version has changed, and at least every 30 minutes |
+| 2 | `RetrieveRelationship` by schema name | `LoadPlan` | When the copy plan of a relationship, host table and host columns is missing or due for a full load (every 30 minutes) |
+| 3 | `RetrieveMetadataChanges`: the host table and the other table, with their primary id and name columns, ownership type and privileges, and the host columns (all properties) | `TableMetadata`, called by `WithTables` | With 2, and on each check of the copy plan (every 2 minutes) |
 | 4 | `RetrieveMultiple` on `sdkmessagefilter`, linked to `sdkmessage`: at most one message filter of the message `RetrievePrincipalAccess` whose `primaryobjecttypecode` is the host table | `SupportsPrincipalAccess`, called by `LoadPlan` | With 2 and 3, once the relationship and both tables are found |
-| 5 | `RetrieveMetadataChanges`: the N:N relationships of the host tables (`SchemaName`, `Entity1LogicalName`, `Entity2LogicalName`) | `LoadRoutes` | Delete 1 of 2 or Update, after the forms were loaded again |
+| 5 | `RetrieveMetadataChanges`: the N:N relationships of the host tables (`SchemaName`, `Entity1LogicalName`, `Entity2LogicalName`) | `LoadRoutes` | Delete 1 of 2 or Update, after the forms were read again or checked |
 | 6 | `RetrieveMultiple` on the other table: the primary name column of the updated record | `ReadOther` | Update, once when the update sets the primary name column of a table whose names are copied |
 | 7 | `RetrieveMultiple` on the intersect table: the host ids linked to the deleted or renamed record, one page of 5,000 | `ReadHosts` | Delete 1 of 2, for each route of the deleted record's table; Update, for each copy plan of the renamed record's table, once the name has changed |
 | 8 | `RetrieveMultiple` on the host table: the host columns of one record | `ReadRecord`, called by `Rebuild` | Twice for each record rebuilt |
@@ -7650,7 +8393,7 @@ Dataverse does not call the Delete and Update steps for the deletes and updates 
 | **Form** | The page that shows one record. Each column on the form is shown by a control |
 | **Form library** | A JavaScript web resource added to a form. Here: `kv_/NToNMultiSelect/formloader.js`, which downloads the control's bundle where the platform does not (chapter 7) |
 | **Form XML** | The XML stored in `systemform` that describes a form and its controls' settings |
-| **Host column** | The text column of the form's table that the control is placed on. The control uses it as an anchor and, with *Copy names into the host column*, writes the linked names into it |
+| **Host column** | The text column of the form's table that the control is placed on. On the form the control shows the saved names in it, never submitted, so it can be required (5.10); with *Copy names into the host column*, it also writes the linked names into the record |
 | **Input property** | A manifest property with `usage="input"`: a setting filled in the form designer |
 | **Intersect table** | The hidden table in which Dataverse stores the links of an N:N relationship, one row per link, with the ids of both records |
 | **Linked table** | A table whose records' names are copied into host columns: the related table of a control with *Copy names into the host column* = Yes (both tables when forms on both sides copy). The steps page creates the Delete and Update steps for the linked tables only (8.17) |

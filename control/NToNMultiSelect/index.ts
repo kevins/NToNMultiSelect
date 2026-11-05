@@ -1,12 +1,13 @@
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
 import { DataverseClient, DataverseError, TimeoutError, friendlyError, isNetworkError, isPermissionError, isServerBusy } from "./src/dataverse";
 import { FormBridge } from "./src/formBridge";
+import { HostField, currentPage } from "./src/hostField";
 import { resolveRelationship } from "./src/metadata";
-import { CopyWriter, NamesCopy, namesCopyFor } from "./src/namesCopy";
+import { CopyWriter, NamesCopy, namesCopyFor, namesText } from "./src/namesCopy";
 import { CLIENT_MODE_LIMIT, OptionsQuery, RelatedData, SERVER_PAGE_SIZE, isSearchable, linkTag } from "./src/relatedData";
 import { Strings, stringsFor } from "./src/strings";
 import { SyncEngine } from "./src/syncEngine";
-import { Item, OptionsMode, RelationshipInfo, isGuid, normalizeId } from "./src/types";
+import { Item, OptionsMode, RelationshipInfo, compareItems, isGuid, normalizeId } from "./src/types";
 import { MultiSelectView, OptionsStatus } from "./src/view";
 
 const CONTROL_NAME = "KV.NToNMultiSelect";
@@ -47,7 +48,12 @@ interface Config {
     openOnClick: boolean;
     /** Each selected value is a link that opens its record in a new tab. */
     openRecords: boolean;
+    /** "Selection on the form": what the form is told about the selection, through the host column (see syncHost). */
+    formSelection: FormSelection;
 }
+
+type FormSelection = "no" | "event";
+const FORM_SELECTIONS: Record<string, FormSelection> = { "1": "event" };
 
 interface ContextInfo {
     entityId?: string;
@@ -121,6 +127,22 @@ let copiesWriting = 0;
  * resyncPeers), whether or not a subgrid on the form would tell them.
  */
 const liveControls = new Set<NToNMultiSelect>();
+
+/**
+ * Removals held back on a required field (see NToNMultiSelect.holdBackLast), by record and relationship (recordKey).
+ * Every instance on the page that shows the record leaves those values out of its field and of the host column, and the
+ * instance that holds them sends them once it may.
+ */
+interface Held {
+    item: Item;
+    holder: NToNMultiSelect;
+    /**
+     * Set while the removal waits for a read of the saved links before it may go (see holdBackLast): how many reads its
+     * holder had done then (see readsDone).
+     */
+    readsAtHold?: number;
+}
+const heldRemovals = new Map<string, Map<string, Held>>();
 let unloadGuardInstalled = false;
 function installUnloadGuard(): void {
     if (unloadGuardInstalled) return;
@@ -230,6 +252,17 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     private data: RelatedData | null = null;
     private engine: SyncEngine | null = null;
     private bridge: FormBridge | null = null;
+    /** The host column on the control's own form (see syncHost). */
+    private hostField: HostField | null = null;
+    /**
+     * The record ("" for a new one) whose names syncHost last worked out, those names and their records (sorted ids): a
+     * later difference of the records is a change.
+     */
+    private hostSyncedFor: string | null = null;
+    private hostText: string | null = null;
+    private hostIds = "";
+    /** syncHost last kept the names while writes were on their way: once they are done, OnChange answers what was seen. */
+    private hostWaited = false;
     /** Subgrids hidden by "Hide related subgrids", shared with every bridge this instance makes (see FormBridge). */
     private readonly hiddenGrids = new Set<string>();
 
@@ -277,6 +310,17 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     private selectedLoaded = false;
     /** A re-read was asked for while the first read was still on its way (see scheduleResync). */
     private resyncWanted = false;
+    /**
+     * Another instance on the page has changed the links this one shows since it last read them (see markPeersStale):
+     * until it has read them again, it leaves the host column to the instances that know (see syncHost).
+     */
+    private hostStale = false;
+    /** How often hostStale was set: a read that began before the last time doesn't clear it. */
+    private staleMarks = 0;
+    /** This instance has changed links since its last batch was done, so the other instances were marked stale. */
+    private markedPeers = false;
+    /** Reads of the saved links this instance has done (see loadSelected): a removal waiting for one counts on it. */
+    private readsDone = 0;
 
     // "Copy names into the host column".
     /**
@@ -292,6 +336,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     /** A new record's first save changes what counts as saving, without a new engine version (see render). */
     private renderedRecordId: string | null = null;
     private cachedSelected: Item[] = [];
+    /** The selected records that are saved (see SyncEngine.savedSelected), kept with cachedSelected (see syncHost). */
+    private cachedSaved: Item[] = [];
     private cachedPending = new Set<string>();
     /** The places taken toward Maximum selections (see SyncEngine.occupiedCount), kept with cachedSelected. */
     private cachedOccupied = 0;
@@ -366,6 +412,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         );
         window.addEventListener("online", this.onOnline);
         liveControls.add(this);
+        // Now, while window.Xrm is that of the control's own form (see HostField).
+        const host = (context.parameters.value as unknown as { attributes?: { LogicalName?: string } })?.attributes?.LogicalName;
+        const table = (this.contextInfo(context).entityTypeName ?? "").toLowerCase();
+        this.hostField = host && table ? new HostField(currentPage(), table, host) : null;
         this.applyConfig(context);
         this.render();
     }
@@ -412,8 +462,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     }
 
     public getOutputs(): IOutputs {
-        // The host column is only an anchor, so the form never gets a value from this control and is never made
-        // dirty by it. "Copy names into the host column" writes to the record itself (see updateSummary).
+        // The form never gets a value to save from this control, so it is never made dirty by it: the picks are shown in
+        // the host column through the form's own API, never to be saved (see syncHost), and "Copy names into the host
+        // column" writes to the record itself (see updateSummary).
         return {};
     }
 
@@ -430,6 +481,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         liveControls.delete(this);
         this.view.destroy();
         this.retireEngine();
+        this.hostField?.dispose();
     }
 
     // ---------------------------------------------------------------- configuration & loading
@@ -457,6 +509,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             searchMode: String(p.searchMode?.raw ?? "0") === "1" ? "contains" : "startswith",
             openOnClick: String(p.openOnClick?.raw ?? "0") === "1",
             openRecords: String(p.openRecords?.raw ?? "0") === "1",
+            formSelection: FORM_SELECTIONS[String(p.formSelection?.raw ?? "0")] ?? "no",
         };
     }
 
@@ -525,6 +578,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     private async initialize(context: ComponentFramework.Context<IInputs>): Promise<void> {
         const token = ++this.initToken;
         const config = this.config!;
+        // The record this instance worked on ("" for a new one), also while a new record's picks are still being linked.
+        const previous = this.engine ? (this.engine.getRecordId() ?? "") : this.hostSyncedFor;
         this.retireEngine();
         this.data = null;
         this.rel = null;
@@ -535,11 +590,16 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         this.initGaveUp = false;
         this.selectedLoaded = false;
         this.resyncWanted = false;
+        // The links are read again from the start (after the other instances' writes, see peersIdle).
+        this.hostStale = false;
         this.error = null;
         this.batchErrors = 0;
         this.batchUnknown = false;
         this.resyncRetries = 0;
         this.loadedCopy = context.parameters.value?.raw || null;
+        // Another record: its first names are no change, also after a new record the form didn't save (see syncHost).
+        if ((this.recordIdFrom(context) ?? "") !== previous) this.hostSyncedFor = null;
+        this.hostWaited = false;
         this.recordBase = null;
         clearTimeout(this.loadRetryTimer);
         clearTimeout(this.initRetryTimer);
@@ -586,7 +646,6 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             this.bridge = bridge;
             liveEngines.add(engine);
             installUnloadGuard();
-            this.warnAboutRequiredHost();
 
             // Use the latest context: the record may have been saved while the metadata was loading.
             const recordId = this.recordIdFrom(this.context);
@@ -681,23 +740,12 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     }
 
     /**
-     * The control never fills its host column on the form ("Copy names into the host column" writes to the record
-     * instead), so a Business Required host column would block every save. Easy to miss when setting up a form, so
-     * say so in the console.
-     */
-    private warnAboutRequiredHost(): void {
-        const required = (this.context.parameters.value as unknown as { attributes?: { RequiredLevel?: number } })?.attributes?.RequiredLevel;
-        if (required === 1 || required === 2) {
-            console.warn(`[${CONTROL_NAME}] The host column is required, but this control never fills it on the form, so the form can't be saved while it's empty. Use a column that isn't required.`);
-        }
-    }
-
-    /**
      * Lets the current engine go. If it still has changes to write, or writes on their way, for a saved record, it
      * keeps running on its own (see Detached). Unsaved picks on a new record become an orphan the next instance can
      * adopt, unless `discardHeld` is set (the control has moved on to another record, so they must not follow).
      */
     private retireEngine(discardHeld = false): void {
+        this.handOverHeld();
         const engine = this.engine;
         const bridge = this.bridge;
         const copy = this.copy;
@@ -795,10 +843,17 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         if (picks.length) this.engine.setMany(picks, true);
     }
 
-    /** Waits for writes to this record by instances that are already gone (e.g. the record was just reopened). */
+    /**
+     * Waits for writes to this record by other instances, so that a read that follows includes them: those that are
+     * already gone (e.g. the record was just reopened) and those on the page (another copy of the field).
+     */
     private async peersIdle(recordId: string): Promise<void> {
         const key = this.recordKey(recordId);
         const running = [...detached].filter(([engine, d]) => d.key === key && engine !== this.engine).map(([engine]) => engine.whenIdle());
+        for (const control of liveControls) {
+            const shown = control.engine?.getRecordId();
+            if (control !== this && control.engine && shown && control.recordKey(shown) === key) running.push(control.engine.whenIdle());
+        }
         if (running.length) await Promise.all(running);
     }
 
@@ -815,6 +870,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             await this.peersIdle(recordId);
             await engine.whenIdle();
             const version = engine.version;
+            const marks = this.staleMarks;
             const items = await data.loadSelected(recordId);
             if (token !== this.initToken || engine !== this.engine) return false;
             if (engine.version !== version || engine.isBusy()) {
@@ -824,6 +880,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             }
             const before = engine.selected();
             engine.setConfirmed(items);
+            this.readsDone++;
+            // Read once the other instances' writes were done, and none of them has changed the links since.
+            if (this.staleMarks === marks) this.hostStale = false;
             this.resyncRetries = 0;
             // The message of an earlier read that failed is out of date now (another message stays).
             if (this.error?.startsWith(this.t.loadSelectedFailed)) this.error = null;
@@ -839,7 +898,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             console.error(`[${CONTROL_NAME}] loading related records failed`, error);
             // A place held by an add whose outcome isn't known is only freed by a read of the saved links: while there
             // is one, the read is tried again a few times (as the first load is).
-            if (isResync && engine === this.engine && engine.hasUncertain() && this.resyncRetries < LOAD_RETRY_DELAYS_MS.length) {
+            if (isResync && engine === this.engine && (engine.hasUncertain() || this.checksPending()) && this.resyncRetries < LOAD_RETRY_DELAYS_MS.length) {
                 const delay = LOAD_RETRY_DELAYS_MS[this.resyncRetries++];
                 clearTimeout(this.resyncTimer);
                 this.resyncTimer = setTimeout(() => {
@@ -908,6 +967,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         // An engine belongs to one record for good. Once it has an id, a later save of the same form is an update, or
         // the save of another record the form has moved on to, whose links must never get this record's picks.
         if (engine.getRecordId()) return;
+        // What the column showed on the unsaved form, and what its OnChange saw, now belong to the record (see syncHost):
+        // before the engine gets the id, since with no picks to link it draws the field at once.
+        if (engine === this.engine && !this.destroyed) this.hostField?.saved(recordId);
         engine.setRecordId(recordId);
         if (engine.hasPendingChanges()) liveEngines.add(engine);
         if (engine === this.engine && !this.destroyed) {
@@ -969,8 +1031,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         }
         const hadErrors = this.batchErrors > 0;
         const unknown = this.batchUnknown;
+        const markedPeers = this.markedPeers;
         this.batchErrors = 0;
         this.batchUnknown = false;
+        this.markedPeers = false;
         if (unknown) {
             // A write may have been saved although it failed: the copy follows the links saved on the server, and the
             // re-read that settles it gets its own retries (see loadSelected).
@@ -984,6 +1048,11 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             if (!unknown) this.updateSummary();
             const recordId = engine.getRecordId();
             if (recordId) this.resyncPeers(this.recordKey(recordId), engine);
+        } else if (markedPeers) {
+            // Nothing was saved after all (the writes failed or undid each other), but the other instances were told
+            // their links are out of date: they read them again.
+            const recordId = engine.getRecordId();
+            if (recordId) this.resyncPeers(this.recordKey(recordId), engine, true);
         }
         if (hadErrors) {
             // A failure might not be what it seems (the connection dropped after the server saved): re-read.
@@ -996,6 +1065,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         if (changed || away.unknown) {
             away.bridge.refreshSubgrids(engine.getRecordId());
             this.resyncPeers(away.key, engine);
+        } else {
+            // Nothing was saved after all, but the instances told their links are out of date read them again.
+            this.resyncPeers(away.key, engine, true);
         }
         if (engine.hasPendingChanges() || engine.isBusy()) return;
         if (away.failures > 0) {
@@ -1019,13 +1091,32 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
      * `engine` saved changes to the links of `key` (see recordKey): every other instance on the page that shows them
      * reads them again. A subgrid's OnLoad reaches them only when the form has a visible subgrid of the relationship;
      * otherwise they would keep showing the links from before and, with "Copy names into the host column", write
-     * those names into the shared copy with their next change.
+     * those names into the shared copy with their next change. `onlyStale`: only those marked out of date (see
+     * markPeersStale).
      */
-    private resyncPeers(key: string, engine: SyncEngine): void {
+    private resyncPeers(key: string, engine: SyncEngine, onlyStale = false): void {
         for (const control of liveControls) {
             const recordId = control.engine?.getRecordId();
-            if (control.engine !== engine && !control.destroyed && recordId && control.recordKey(recordId) === key) {
+            if (control.engine !== engine && !control.destroyed && recordId && control.recordKey(recordId) === key && (!onlyStale || control.hostStale)) {
                 control.scheduleResync();
+            }
+        }
+    }
+
+    /**
+     * `engine` has just changed the links of its record: every other instance on the page that shows them shows links
+     * from before until it reads them again, so meanwhile it leaves the host column alone (see hostStale).
+     */
+    private markPeersStale(engine: SyncEngine): void {
+        const recordId = engine.getRecordId();
+        if (!recordId) return;
+        const key = this.recordKey(recordId);
+        for (const control of liveControls) {
+            const shown = control.engine?.getRecordId();
+            if (control !== this && !control.destroyed && shown && control.recordKey(shown) === key) {
+                control.hostStale = true;
+                control.staleMarks++;
+                this.markedPeers = true;
             }
         }
     }
@@ -1101,14 +1192,14 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             names: namesCopyFor(`${recordKey}|${host}`, this.loadedCopy),
             writer: {
                 maxLength: attributes.MaxLength,
-                write: (value) => trackCopy(data.updateRecord(recordId, host, value)),
+                write: (value, version) => trackCopy(data.updateRecord(recordId, host, value, version)),
                 onError: (error, step) => this.onCopyFailed(copy, error, label, t, step),
-                readSaved: async () => {
+                readHostAndLinks: async () => {
                     const engine = this.engine;
                     const version = engine?.version;
-                    const items = await trackCopy(data.loadSelected(recordId));
-                    this.showSaved(engine, version, recordId, items);
-                    return items;
+                    const saved = await trackCopy(data.readHostAndLinks(recordId, host));
+                    this.showSaved(engine, version, recordId, saved.items);
+                    return saved;
                 },
             },
         };
@@ -1116,10 +1207,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     }
 
     /**
-     * Shows the links the names copy has just read from the server before writing their names (see CopyWriter.readSaved):
-     * links made or removed elsewhere since the field read them (in another tab, by another user, from the other side
-     * of the relationship, by a flow) then appear with the user's next change, without a reload. Only while this
-     * instance still shows that record and nothing has changed in it since the read began.
+     * Shows the links the names copy has just read from the server before writing their names (see
+     * CopyWriter.readHostAndLinks): links made or removed elsewhere since the field read them (in another tab, by another
+     * user, from the other side of the relationship, by a flow) then appear with the user's next change, without a
+     * reload. Only while this instance still shows that record and nothing has changed in it since the read began.
      */
     private showSaved(engine: SyncEngine | null, version: number | undefined, recordId: string, items: Item[]): void {
         if (this.destroyed || !engine || engine !== this.engine || engine.getRecordId() !== recordId) return;
@@ -1230,10 +1321,13 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         const max = this.config?.maxSelections ?? 0;
         if (select && max > 0) {
             // A record whose removal is still on its way keeps its place, since the removal may fail and bring it
-            // back: the limit counts it until the removal succeeded, and picking it again takes no new place.
-            const adding = items.filter((i) => !engine.occupies(i.id)).length;
+            // back: the limit counts it until the removal succeeded, and picking it again takes no new place. A value
+            // whose removal is held back gives its place to the pick that replaces it (see holdBackLast), so picking it
+            // again takes a place like a new one.
+            const held = this.heldHere();
+            const adding = items.filter((i) => !engine.occupies(i.id) || !!held?.has(i.id)).length;
             // A pick that takes no new place is never refused (the record may hold more links than the limit already).
-            if (adding > 0 && engine.occupiedCount() + adding > max) {
+            if (adding > 0 && engine.occupiedCount() - this.heldCount() + adding > max) {
                 // The view already blocks this; the check here also covers + New and anything else that selects.
                 this.error = this.t.maxNote(max);
                 this.render();
@@ -1241,7 +1335,202 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             }
         }
         this.error = null;
-        engine.setMany(items, select);
+        const send = select ? this.takeBack(items) : this.holdBackLast(engine, items);
+        const version = engine.version;
+        if (send.length) engine.setMany(send, select);
+        if (engine.version === version) {
+            // Only a held-back removal changed: nothing to send, but the field shows it.
+            this.render();
+            return;
+        }
+        this.markPeersStale(engine);
+        // Changes made on links another instance had changed: read them again once these are written.
+        if (this.hostStale) this.scheduleResync();
+    }
+
+    /**
+     * Removals that would leave a required field without a saved value are held back: the values disappear from the
+     * field and from the host column, so the form's own check stops a save, but nothing is sent, so leaving the record
+     * keeps them, as leaving an emptied required field without saving does. They are sent once another value is saved,
+     * or the field isn't required any more (see releaseHeldBack). Every instance on the page that shows the record
+     * shares them (see heldRemovals). A removal that would leave one value waits for a read of the saved links first:
+     * another tab or user may have removed that value since this instance read them. Returns the removals to send now.
+     */
+    private holdBackLast(engine: SyncEngine, items: Item[]): Item[] {
+        const recordId = engine.getRecordId();
+        if (!recordId || !this.hostField?.isRequired(recordId)) return items;
+        const left = this.survivors(recordId, new Set(items.map((item) => item.id))).length;
+        if (left > 1) return items;
+        const readsAtHold = left === 1 ? this.readsDone : undefined;
+        const key = this.recordKey(recordId);
+        const held = heldRemovals.get(key) ?? new Map<string, Held>();
+        const send: Item[] = [];
+        // The picks of a new record's first save that are still being linked count as saved: the record was saved with
+        // them (see syncHost).
+        const firstSave = this.hostSyncedFor === "" ? new Set(this.hostIds.split(",")) : null;
+        for (const item of items) {
+            // A pick still on its way isn't saved: undoing it is sent as usual.
+            if (engine.isConfirmed(item.id) || firstSave?.has(item.id)) held.set(item.id, { item, holder: this, readsAtHold });
+            else send.push(item);
+        }
+        if (held.size) heldRemovals.set(key, held);
+        this.renderPeers(key);
+        if (send.length < items.length && readsAtHold !== undefined) void this.loadSelected(this.initToken, true);
+        // Its own count couldn't be trusted (see survivors): the hold is settled once the links are read again.
+        else if (this.hostStale) this.scheduleResync();
+        return send;
+    }
+
+    /** Whether a removal this instance holds still waits for a read of the saved links (see holdBackLast). */
+    private checksPending(): boolean {
+        const held = this.heldHere();
+        if (!held) return false;
+        for (const entry of held.values()) {
+            if (entry.holder === this && entry.readsAtHold !== undefined && this.readsDone <= entry.readsAtHold) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The selected links of `recordId` known to stay saved, as far as the instances on the page know (see
+     * SyncEngine.savedSelected): less `removing`, the values held back, and those another instance is removing. None
+     * while this instance hasn't read the links since another one changed them (see hostStale): its count can't be
+     * trusted then. An instance in another tab, or another user, isn't known here.
+     */
+    private survivors(recordId: string, removing: Set<string>): Item[] {
+        if (!this.engine || this.hostStale) return [];
+        const key = this.recordKey(recordId);
+        const peers = this.recordPeers(key);
+        const gone = new Set(removing);
+        heldRemovals.get(key)?.forEach((_, id) => gone.add(id));
+        for (const peer of peers) peer.engine?.removals().forEach((id) => gone.add(id));
+        const found = new Map<string, Item>();
+        for (const control of [this as NToNMultiSelect, ...peers.filter((peer) => !peer.hostStale)]) {
+            for (const item of control.engine?.savedSelected() ?? []) {
+                if (!gone.has(item.id)) found.set(item.id, item);
+            }
+        }
+        return [...found.values()];
+    }
+
+    /** Picking a value whose removal is held back keeps it: nothing is sent for it (see holdBackLast). */
+    private takeBack(items: Item[]): Item[] {
+        const recordId = this.engine?.getRecordId();
+        const key = recordId ? this.recordKey(recordId) : null;
+        const held = key ? heldRemovals.get(key) : undefined;
+        if (!key || !held) return items;
+        const send: Item[] = [];
+        for (const item of items) {
+            if (!held.delete(item.id) || !this.engine?.isSelected(item.id)) send.push(item);
+        }
+        if (!held.size) heldRemovals.delete(key);
+        this.renderPeers(key);
+        return send;
+    }
+
+    /**
+     * Sends the removals this instance holds back (see holdBackLast) once the field has another saved value, or isn't
+     * required any more. Values no longer selected at all (the links were read again without them) are simply let go.
+     */
+    private releaseHeldBack(): void {
+        const engine = this.engine;
+        const recordId = engine?.getRecordId();
+        const key = recordId ? this.recordKey(recordId) : null;
+        const held = key ? heldRemovals.get(key) : undefined;
+        if (!engine || !recordId || !key || !held) return;
+        const required = this.hostField?.isRequired(recordId);
+        const mine: Item[] = [];
+        for (const [id, entry] of [...held]) {
+            if (entry.holder !== this) continue;
+            if (!engine.isSelected(id)) held.delete(id);
+            // Not while it waits for a read of the saved links (see holdBackLast).
+            else if (!required || entry.readsAtHold === undefined || this.readsDone > entry.readsAtHold) mine.push(entry.item);
+        }
+        if (!held.size) heldRemovals.delete(key);
+        if (!mine.length) return;
+        if (required && this.survivors(recordId, new Set()).length === 0) return;
+        for (const item of mine) held.delete(item.id);
+        if (!held.size) heldRemovals.delete(key);
+        const version = engine.version;
+        engine.setMany(mine, false);
+        if (engine.version !== version) this.markPeersStale(engine);
+        this.renderPeers(key);
+    }
+
+    /**
+     * The removals this instance holds back, when it goes or starts again: another instance on the page that shows the
+     * record takes them over; without one they are dropped, and the values stay on the record (see holdBackLast).
+     */
+    private handOverHeld(): void {
+        const recordId = this.engine?.getRecordId();
+        const key = recordId ? this.recordKey(recordId) : null;
+        const held = key ? heldRemovals.get(key) : undefined;
+        if (!key || !held) return;
+        const heir = this.recordPeers(key)[0];
+        for (const [id, entry] of [...held]) {
+            if (entry.holder !== this) continue;
+            if (!heir) {
+                held.delete(id);
+                continue;
+            }
+            entry.holder = heir;
+            // A removal still waiting for a read waits for one of the new holder's.
+            if (entry.readsAtHold !== undefined) {
+                entry.readsAtHold = heir.readsDone;
+                heir.scheduleResync();
+            }
+        }
+        if (!held.size) heldRemovals.delete(key);
+        this.renderPeers(key);
+    }
+
+    /** The removals held back on the record this instance shows (see heldRemovals). */
+    private heldHere(): Map<string, Held> | undefined {
+        const recordId = this.engine?.getRecordId();
+        return recordId ? heldRemovals.get(this.recordKey(recordId)) : undefined;
+    }
+
+    /** How many held-back values this instance has selected: each gives its place to its replacement. */
+    private heldCount(): number {
+        const held = this.heldHere();
+        let count = 0;
+        held?.forEach((_, id) => {
+            if (this.engine?.isSelected(id)) count++;
+        });
+        return count;
+    }
+
+    /** `items` without the values whose removal is held back (see holdBackLast). */
+    private shown(items: Item[]): Item[] {
+        const held = this.heldHere();
+        return held?.size ? items.filter((item) => !held.has(item.id)) : items;
+    }
+
+    /** The other instances on the page that show the links of `key` (see recordKey). */
+    private recordPeers(key: string): NToNMultiSelect[] {
+        return [...liveControls].filter((control) => {
+            const shown = control.engine?.getRecordId();
+            return control !== this && !control.destroyed && !!shown && control.recordKey(shown) === key;
+        });
+    }
+
+    /** Draws the other instances that show the links of `key` again: what they leave out has changed. */
+    private renderPeers(key: string): void {
+        for (const control of this.recordPeers(key)) control.render();
+    }
+
+    /**
+     * The other copies of this field on this unsaved form (a copy in the header, on another tab). Picks wait in each
+     * copy until the record is saved, and each copy links its own then.
+     */
+    private unsavedPeers(): NToNMultiSelect[] {
+        const host = this.hostField;
+        if (!host) return [];
+        return [...liveControls].filter((control) => {
+            const engine = control.engine;
+            if (control === this || !engine || engine.getRecordId() || !control.selectedLoaded || control.saveFirst) return false;
+            return control.rel?.schemaName === this.rel?.schemaName && host.sameField(control.hostField);
+        });
     }
 
     private async createRecord(): Promise<void> {
@@ -1501,6 +1790,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
 
     private render(): void {
         if (this.destroyed || !this.view) return;
+        this.releaseHeldBack();
         const engine = this.engine;
         if (engine) {
             const recordId = engine.getRecordId();
@@ -1508,6 +1798,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 this.renderedVersion = engine.version;
                 this.renderedRecordId = recordId;
                 this.cachedSelected = engine.selected();
+                this.cachedSaved = recordId ? engine.savedSelected() : [];
                 // Show the "saving" look only for real writes, not for values waiting for a new record's first save.
                 this.cachedPending = recordId ? engine.pendingIds() : new Set<string>();
                 this.cachedHeld = engine.placeHolders();
@@ -1515,6 +1806,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             }
         } else if (this.cachedSelected.length || this.cachedPending.size || this.cachedOccupied) {
             this.cachedSelected = [];
+            this.cachedSaved = [];
             this.cachedPending = new Set<string>();
             this.cachedHeld = new Set<string>();
             this.cachedOccupied = 0;
@@ -1524,8 +1816,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         const mode = this.context.mode;
         const config = this.config;
         const max = config?.maxSelections ?? 0;
-        // Records whose removal is still on its way count until it succeeded (see SyncEngine.occupiedCount).
-        const maxReached = max > 0 && this.cachedOccupied >= max;
+        // Records whose removal is still on its way count until it succeeded (see SyncEngine.occupiedCount); a value
+        // whose removal is held back gives its place to the pick that replaces it (see holdBackLast).
+        const occupied = this.cachedOccupied - this.heldCount();
+        const maxReached = max > 0 && occupied >= max;
 
         // Select all only appears when every matching row is loaded, the setting allows it, the list is within the
         // limit (0 = as many as one load holds, 500) and selecting them all stays within Maximum selections.
@@ -1534,7 +1828,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         let canSelectAll = allLoaded && !!config?.showSelectAll && this.shownOptions.length > 0 && this.shownOptions.length <= limit;
         if (canSelectAll && max > 0 && engine) {
             const extra = this.shownOptions.filter((i) => !engine.occupies(i.id)).length;
-            canSelectAll = this.cachedOccupied + extra <= max;
+            canSelectAll = occupied + extra <= max;
         }
         const note = max > 0 ? (maxReached ? t.maxReached(max) : t.maxNote(max)) : null;
 
@@ -1547,7 +1841,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         // "Open selected records" needs the related table from the metadata, and isn't offered while the control can't work.
         const openRecords = !!config?.openRecords && !!this.rel && !fatalError;
         this.view.render({
-            selected: this.cachedSelected,
+            selected: this.shown(this.cachedSelected),
             pending: this.cachedPending,
             held: this.cachedHeld,
             options: this.shownOptions,
@@ -1571,6 +1865,90 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             openRecords,
             interceptLinks: openRecords && this.opensRecordsInApp(),
         });
+        this.syncHost();
+    }
+
+    /**
+     * Shows the picks in the host column on the control's own form (see HostField), once they are known. For a saved
+     * record, those that are saved: a pick still on its way may yet fail, and a required column must not let the form
+     * save the record meanwhile as if it had been made. Values whose removal is held back are left out (see
+     * holdBackLast). For a new record, the picks held for its first save. Before
+     * that, or when they can't be read, the column keeps the value the form has, so that a required column is never
+     * filled or emptied by mistake; so it does while another instance has changed the links since this one read them
+     * (see hostStale). Where picks can only be made once the record is saved, a required column would keep it from
+     * being saved at all: its requirement is lifted until then.
+     *
+     * With "Selection on the form" = Event, the column's OnChange runs too when the selection changes, and a saved
+     * record's column stands for its saved selection instead, once the changes being written are done: OnChange only
+     * runs for changes that were saved, for a removal once it has gone through, and never for one that failed. Only a
+     * required field whose saved values are all going (their removals are on their way, or held back) shows nothing at
+     * once, as with No, so that the form's own check blocks the save. The selection worked out first for a record is no
+     * change (the form has just opened); every later difference of its records is one, even under the same names. A new
+     * record just saved compares with the picks of its first save, and reports no change while they are being linked;
+     * once they are, OnChange runs if one ran meanwhile and saw other names. OnChange also runs when the names go back
+     * over a value the form or a script put into the column, but not for the first names of a record or while a new
+     * record's picks are being linked (see HostField.show).
+     */
+    private syncHost(): void {
+        const host = this.hostField;
+        if (!host) return;
+        if (this.saveFirst) {
+            host.liftRequirement();
+            return;
+        }
+        host.restoreRequirement();
+        const engine = this.engine;
+        // Column security keeps the user from updating the column: it stays as the form shows it, as the field would.
+        if (!engine || !this.selectedLoaded || this.fatalError || this.columnLocked()) return;
+        const recordId = engine.getRecordId();
+        if (recordId && this.hostStale) return;
+        const formSelection = this.config?.formSelection ?? "no";
+        const key = recordId ?? "";
+        // A new record just saved: the picks of its first save stay the ones to compare with, so the save is no change.
+        // While they are still being linked (until the last write is back, a refused one too, and a write whose outcome
+        // isn't known is settled by a read), the column shows the links saved so far, as for any saved record (the
+        // record was saved without the names, so the form's refresh after the save finds the same value), and no change
+        // is reported: the names coming back as the picks are linked are none either.
+        const justSaved = key !== "" && this.hostSyncedFor === "";
+        const linking = justSaved && (engine.hasPendingChanges() || engine.isBusy() || engine.hasUncertain());
+        const first = this.hostSyncedFor !== key && !justSaved;
+        let items: Item[] | null = recordId ? this.shown(this.cachedSaved) : this.picksOnUnsavedForm();
+        if (recordId && formSelection === "event" && !linking && (items.length > 0 || !host.isRequired(recordId))) {
+            // The saved selection, once nothing is being written and every outcome is known (null: the column keeps what
+            // it stands for meanwhile).
+            if (!engine.isBusy() && !engine.hasPendingChanges() && !engine.hasUncertain()) items = this.cachedSelected;
+            else if (!first) items = null;
+        }
+        const maxLength = (this.context.parameters.value as unknown as { attributes?: { MaxLength?: number } }).attributes?.MaxLength;
+        const text = items ? namesText(items, maxLength) : this.hostText;
+        const ids = items ? items.map((item) => item.id).sort().join() : this.hostIds;
+        const changed = !first && !linking && ids !== this.hostIds;
+        if (!linking) {
+            this.hostSyncedFor = key;
+            this.hostText = text;
+            this.hostIds = ids;
+        }
+        // While the column waits for writes (items null), names put back run no OnChange either; once the writes are
+        // done, OnChange answers what the handlers saw meanwhile (see HostField.show).
+        const waiting = items === null;
+        const settled = !linking && !waiting && (justSaved || this.hostWaited);
+        this.hostWaited = waiting;
+        host.show(recordId, text, ids, formSelection === "event" ? { changed, first, quiet: first || linking || waiting, linked: settled } : null);
+    }
+
+    /**
+     * The picks held by this copy of the field and the others on this unsaved form (see unsavedPeers), each record once:
+     * all of them are linked when the record is saved, so the column shows them all, and no copy empties or replaces
+     * what another one holds.
+     */
+    private picksOnUnsavedForm(): Item[] {
+        const peers = this.unsavedPeers();
+        if (peers.length === 0) return this.cachedSelected;
+        const byId = new Map<string, Item>();
+        for (const control of [this, ...peers]) {
+            for (const item of control.cachedSelected) byId.set(item.id, item);
+        }
+        return [...byId.values()].sort(compareItems);
     }
 }
 

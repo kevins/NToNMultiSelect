@@ -1,3 +1,5 @@
+import { DataverseError } from "./dataverse";
+import { SavedHost } from "./relatedData";
 import { Item, compareItems } from "./types";
 
 /** How the names are joined in the host column, e.g. "API design; Automation". */
@@ -26,15 +28,24 @@ function isHighSurrogate(code: number): boolean {
 export interface CopyWriter {
     /** The host column's maximum length, which the names are cut to. */
     maxLength?: number;
-    write(value: string | null): Promise<void>;
-    /** `step`: whether reading the saved links (see readSaved) or writing the column failed. */
+    /** With `version` (see readHostAndLinks), the write is refused (412) when the record has changed since. */
+    write(value: string | null, version?: string): Promise<void>;
+    /** `step`: whether reading the saved links (see readSaved, readHostAndLinks) or writing the column failed. */
     onError(error: unknown, step: "read" | "write"): void;
     /**
      * The records linked to the record now, as saved on the server (those the user can read). When the writer has it,
      * the copy writes their names rather than the page's (see NamesCopy.namesToWrite).
      */
     readSaved?(): Promise<Item[]>;
+    /**
+     * The host column as saved now with the record's version, and the records linked to it, from one request (see
+     * NamesCopy.run). Used in place of readSaved when the writer has it.
+     */
+    readHostAndLinks?(): Promise<SavedHost>;
 }
+
+/** How often a write refused because the record changed meanwhile is read and tried again (see NamesCopy.run). */
+const MAX_CONFLICTS = 3;
 
 /**
  * Keeps the host column copy of one record in line with its saved links. There is one for each record and host
@@ -74,10 +85,11 @@ export class NamesCopy {
     /**
      * Copies the names of the links saved on the server, even when the page's names haven't changed: after a write
      * whose outcome isn't known (the connection dropped or the request timed out, so the server may have saved it),
-     * the page's names can't be trusted. Only with CopyWriter.readSaved; without it, nothing is done.
+     * the page's names can't be trusted. Only with CopyWriter.readSaved or readHostAndLinks; without them, nothing is
+     * done.
      */
     public refresh(writer: CopyWriter): void {
-        if (!writer.readSaved) return;
+        if (!writer.readSaved && !writer.readHostAndLinks) return;
         this.writer = writer;
         this.pending = true;
         if (!this.writing) void this.run();
@@ -97,13 +109,23 @@ export class NamesCopy {
 
     private async run(): Promise<void> {
         this.writing = true;
+        let conflicts = 0;
         try {
             while (this.pending) {
                 this.pending = false;
                 const writer = this.writer!;
                 let value: string | null;
+                let host: SavedHost | null = null;
                 try {
-                    value = writer.readSaved ? await this.namesToWrite(writer, writer.readSaved) : this.wanted;
+                    // The record and its links, read together. Anyone who writes the column after this read (the
+                    // names copy plug-in for a link made elsewhere, another tab, another user) gives the record a new
+                    // version, and the write below is refused rather than replacing their newer names with these.
+                    if (writer.readHostAndLinks) {
+                        host = await writer.readHostAndLinks();
+                        value = namesText([...host.items].sort(compareItems), writer.maxLength);
+                    } else {
+                        value = writer.readSaved ? await this.namesToWrite(writer, writer.readSaved) : this.wanted;
+                    }
                 } catch (error) {
                     // The saved links couldn't be read, so the right names aren't known: the column keeps what it
                     // holds, and the failure is shown like a failed write. An update asked for during the read is
@@ -111,11 +133,17 @@ export class NamesCopy {
                     writer.onError(error, "read");
                     continue;
                 }
+                if (host) this.saved = host.value;
                 if (value === this.saved) continue;
                 try {
-                    await writer.write(value);
+                    await (host ? writer.write(value, host.version) : writer.write(value));
                     this.saved = value;
                 } catch (error) {
+                    if (error instanceof DataverseError && error.status === 412 && ++conflicts <= MAX_CONFLICTS) {
+                        // Changed meanwhile: read the record and its links again, and write what they say now.
+                        this.pending = true;
+                        continue;
+                    }
                     // The links stay as they are. The write may still have reached the column (a timeout, or a
                     // connection lost after the server saved it), so its value isn't known and the next update writes.
                     // An update asked for during the write is still done.
