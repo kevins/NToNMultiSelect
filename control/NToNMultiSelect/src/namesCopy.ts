@@ -1,33 +1,30 @@
 import { DataverseError } from "./dataverse";
 import { SavedHost } from "./relatedData";
+import { cutText } from "./text";
 import { Item, compareItems } from "./types";
 
-/** How the names are joined in the host column, e.g. "API design; Automation". */
-const SEPARATOR = "; ";
+/** How the names are joined in the host column, e.g. "API design; Automation" (see the "Names separator" setting). */
+export const SEPARATOR = "; ";
+/** "Names separator" = Comma: "API design, Automation". */
+export const COMMA_SEPARATOR = ", ";
 
 /**
- * The text "Copy names into the host column" writes: the selected names in the order shown, cut to the column's
- * maximum length with an ellipsis, or null when nothing is selected.
+ * The text "Copy names into the host column" writes: the selected names in the order shown, joined with `separator`
+ * ("Names separator": "; " or ", "), cut to the column's maximum length with an ellipsis, or null when nothing is selected.
  */
-export function namesText(selected: Item[], maxLength?: number): string | null {
-    const value = selected.map((item) => item.name).join(SEPARATOR);
-    if (maxLength && value.length > maxLength) {
-        // The length counts UTF-16 code units: never keep the first half of a character outside the BMP (an emoji).
-        let cut = Math.max(0, maxLength - 1);
-        if (cut > 0 && isHighSurrogate(value.charCodeAt(cut - 1))) cut--;
-        return value.slice(0, cut) + "…";
-    }
+export function namesText(selected: Item[], maxLength?: number, separator = SEPARATOR): string | null {
+    const value = selected.map((item) => item.name).join(separator);
+    // The length counts UTF-16 code units: never keep the first half of a character outside the BMP (see cutText).
+    if (maxLength && value.length > maxLength) return cutText(value, maxLength - 1) + "…";
     return value || null;
-}
-
-function isHighSurrogate(code: number): boolean {
-    return code >= 0xd800 && code <= 0xdbff;
 }
 
 /** How a control instance, or the writes that finish after a record was closed, write a copy and report a failure. */
 export interface CopyWriter {
     /** The host column's maximum length, which the names are cut to. */
     maxLength?: number;
+    /** Between the names ("Names separator"); the semicolon when left out. */
+    separator?: string;
     /** With `version` (see readHostAndLinks), the write is refused (412) when the record has changed since. */
     write(value: string | null, version?: string): Promise<void>;
     /** `step`: whether reading the saved links (see readSaved, readHostAndLinks) or writing the column failed. */
@@ -41,7 +38,7 @@ export interface CopyWriter {
      * The host column as saved now with the record's version, and the records linked to it, from one request (see
      * NamesCopy.run). Used in place of readSaved when the writer has it.
      */
-    readHostAndLinks?(): Promise<SavedHost>;
+    readHostAndLinks?(quiet?: boolean): Promise<SavedHost>;
 }
 
 /** How often a write refused because the record changed meanwhile is read and tried again (see NamesCopy.run). */
@@ -61,6 +58,8 @@ export class NamesCopy {
     private wanted: string | null;
     /** An update is waiting to be written. */
     private pending = false;
+    /** What waits is only a check of names the record's save stored (see refresh): its read doesn't hold the page. */
+    private quiet = false;
     private writing = false;
     /** The writer of the latest update, dropped once the writes are done so that a closed control isn't kept alive. */
     private writer: CopyWriter | null = null;
@@ -83,13 +82,25 @@ export class NamesCopy {
     }
 
     /**
+     * The record's own save has stored `value` in the column ("Save the selection" = With the record): an update with
+     * the same names isn't sent again.
+     */
+    public stored(value: string | null): void {
+        this.saved = value;
+    }
+
+    /**
      * Copies the names of the links saved on the server, even when the page's names haven't changed: after a write
      * whose outcome isn't known (the connection dropped or the request timed out, so the server may have saved it),
      * the page's names can't be trusted. Only with CopyWriter.readSaved or readHostAndLinks; without them, nothing is
      * done.
      */
-    public refresh(writer: CopyWriter): void {
+    public refresh(writer: CopyWriter, check = false): void {
         if (!writer.readSaved && !writer.readHostAndLinks) return;
+        // `check`: the record's own save has just stored the names ("Save the selection" = With the record), and this
+        // only makes sure they match the saved links. Its read is quiet (see CopyWriter.readHostAndLinks): if the page
+        // closes meanwhile, nothing is lost. Anything else waiting keeps its read as it was.
+        this.quiet = check && (!this.pending || this.quiet);
         this.writer = writer;
         this.pending = true;
         if (!this.writing) void this.run();
@@ -97,12 +108,13 @@ export class NamesCopy {
 
     /** Copies the names of `selected`; call it once their links are saved. */
     public update(selected: Item[], writer: CopyWriter): void {
-        this.wanted = namesText(selected, writer.maxLength);
+        this.wanted = namesText(selected, writer.maxLength, writer.separator);
         this.writer = writer;
         // While a write is on its way, the update waits for it, whatever its names: it may go back to what the
         // column held before that write.
         if (this.writing || this.wanted !== this.saved) {
             this.pending = true;
+            this.quiet = false;
             if (!this.writing) void this.run();
         }
     }
@@ -113,6 +125,8 @@ export class NamesCopy {
         try {
             while (this.pending) {
                 this.pending = false;
+                const quiet = this.quiet;
+                this.quiet = false;
                 const writer = this.writer!;
                 let value: string | null;
                 let host: SavedHost | null = null;
@@ -121,8 +135,8 @@ export class NamesCopy {
                     // names copy plug-in for a link made elsewhere, another tab, another user) gives the record a new
                     // version, and the write below is refused rather than replacing their newer names with these.
                     if (writer.readHostAndLinks) {
-                        host = await writer.readHostAndLinks();
-                        value = namesText([...host.items].sort(compareItems), writer.maxLength);
+                        host = await writer.readHostAndLinks(quiet);
+                        value = namesText([...host.items].sort(compareItems), writer.maxLength, writer.separator);
                     } else {
                         value = writer.readSaved ? await this.namesToWrite(writer, writer.readSaved) : this.wanted;
                     }
@@ -165,7 +179,7 @@ export class NamesCopy {
      * read just before (see CopyWriter.readSaved). When that read fails, it throws: nothing is written.
      */
     private async namesToWrite(writer: CopyWriter, readSaved: () => Promise<Item[]>): Promise<string | null> {
-        return namesText([...(await readSaved())].sort(compareItems), writer.maxLength);
+        return namesText([...(await readSaved())].sort(compareItems), writer.maxLength, writer.separator);
     }
 }
 

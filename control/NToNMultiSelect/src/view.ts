@@ -51,6 +51,11 @@ export interface ViewState {
      * instead of the browser.
      */
     interceptLinks: boolean;
+    /**
+     * "Columns under each option" is on: a row whose item has details shows them on a second line, and the list shows
+     * four such rows, with or without Select all.
+     */
+    withDetails?: boolean;
 }
 
 export interface ViewCallbacks {
@@ -74,12 +79,71 @@ const ERROR_ICON =
 const LIST_MAX_HEIGHT = 140;
 /** Height of a row: without Select all, the list takes its place and shows five (see listMaxHeight). */
 const ROW_HEIGHT = 35;
+/** Height of a row with a second line ("Columns under each option"). */
+const DETAILS_ROW_HEIGHT = 51;
+/**
+ * The scrolling part with columns under each option: four such rows, with or without Select all (owner's choice: whole
+ * rows, and no taller list; a fifth would not fit in the room Select all leaves).
+ */
+const DETAILS_LIST_MAX_HEIGHT = 4 * DETAILS_ROW_HEIGHT;
+
 /** Tallest the whole list can get (padding, Select all, note, rows, + New, borders); used to pick a side once. */
-const MENU_MAX_HEIGHT = 13 + 35 + 22 + LIST_MAX_HEIGHT + 35 + 2;
+function menuMaxHeight(withDetails: boolean): number {
+    return 13 + 35 + 22 + (withDetails ? DETAILS_LIST_MAX_HEIGHT : LIST_MAX_HEIGHT) + 35 + 2;
+}
 /** Chips rendered while the field is collapsed. More are only built when the user expands the field. */
 const MAX_COLLAPSED_CHIPS = 50;
 /** Names spelled out for screen readers before switching to just the count. */
 const MAX_SPOKEN_NAMES = 10;
+/**
+ * Keys kept while the open list waits for its rows (see MultiSelectView.pendingKeys): at most this many runs of the same
+ * key. A key held down repeats some 30 times a second; a run only counts its presses, however many.
+ */
+const MAX_PENDING_RUNS = 200;
+/** Rows a page key moves the highlight by. */
+const PAGE_STEP = 4;
+
+/** What a key does to the highlight of the open list: Down, Up, Page Down, Page Up, Ctrl+Home, Ctrl+End. */
+type NavigationKey = "next" | "previous" | "pageDown" | "pageUp" | "first" | "last";
+/** Keys kept while the list waits (see MultiSelectView.pendingKeys): the same key pressed `count` times in a row. */
+interface PendingKeys {
+    key: NavigationKey;
+    count: number;
+}
+
+
+/**
+ * Whether `key` goes from the record `current` past the last of the `count` records loaded: Down from the last one, or
+ * Page Down from one of the last few. Ctrl+End doesn't (it would load every page of a large table).
+ */
+function passesLoaded(current: number | null, key: NavigationKey, count: number): boolean {
+    if (current !== null && current >= count) return false;
+    if (key === "next") return current === count - 1;
+    if (key === "pageDown") return (current ?? 0) + PAGE_STEP > count - 1;
+    return false;
+}
+
+/**
+ * Where `key` moves the highlight from `current` (null: nothing highlighted yet), in a list whose keyboard stops run from
+ * `first` to `last` (see MultiSelectView.highlightStops). A list without stops (no rows and no "+ New") keeps it where it is.
+ */
+function moveHighlight(current: number | null, key: NavigationKey, first: number, last: number): number | null {
+    if (last < 0) return current;
+    switch (key) {
+        case "next":
+            return current === null ? first : Math.max(first, Math.min(current + 1, last));
+        case "previous":
+            return current === null ? last : Math.min(last, Math.max(current - 1, first));
+        case "pageDown":
+            return Math.max(first, Math.min(last, (current ?? 0) + PAGE_STEP));
+        case "pageUp":
+            return Math.max(first, Math.min(last, (current ?? 0) - PAGE_STEP));
+        case "first":
+            return first;
+        case "last":
+            return last;
+    }
+}
 
 /**
  * What the list rows were last drawn with, so the next refresh only has to touch the rows that changed since. The sets
@@ -96,11 +160,22 @@ interface DrawnRows {
     current: number | null;
 }
 
-let instanceCounter = 0;
+/**
+ * A new prefix for the ids of one control's elements, unique in `doc`: the count is kept on the document, so that the
+ * controls of another bundle on the same page (KV and KV, or another version with this scheme) never get the same
+ * ids. Versions before it numbered "ntnms1", "ntnms2"... per bundle: the dash keeps clear of those too.
+ */
+function newInstanceId(doc: Document): string {
+    const holder = doc as unknown as Record<symbol, number | undefined>;
+    const key = Symbol.for("ntnms.instanceCount");
+    const count = (holder[key] ?? 0) + 1;
+    holder[key] = count;
+    return `ntnms-${count}`;
+}
 
 /** Renders the control with plain DOM (no framework) so it is tiny, fast and has no style conflicts. */
 export class MultiSelectView {
-    private readonly uid = `ntnms${++instanceCounter}`;
+    private readonly uid: string;
     private readonly root: HTMLDivElement;
     private readonly viewText: HTMLDivElement;
     private readonly chipsList: HTMLUListElement;
@@ -154,8 +229,14 @@ export class MultiSelectView {
     private destroyed = false;
     private lastStatus = "";
     private measureFrame = 0;
-    /** The list was opened with the keyboard before its rows arrived: highlight the first row once they do. */
-    private highlightWhenLoaded = false;
+    /**
+     * Arrow keys pressed while the open list was waiting for its rows (see waitingForRows), however it was opened: they
+     * move the highlight once the rows arrive, as they would have in the loaded list. So Down, Down ends on the first
+     * record, as in a loaded list, and not on Select all or "+ New", the only stop while there are no rows.
+     */
+    private pendingKeys: PendingKeys[] = [];
+    /** A key couldn't be kept (see queueKey): the later ones aren't either, until the keys kept are used or dropped. */
+    private pendingFull = false;
     /** Side of the field the open list is on. Chosen once per opening so the list never jumps while in use. */
     private placeAbove = false;
     /** The field had a size when the list opened. If it didn't (not laid out), the out-of-view check is skipped. */
@@ -185,6 +266,8 @@ export class MultiSelectView {
     private announcing: string[] = [];
     private announceBatchOpen = false;
     private announceTimer: ReturnType<typeof setTimeout> | undefined;
+    /** The next page asked for by keys waiting past the rows loaded (see applyPendingKeys), until it is asked. */
+    private loadMoreTimer: ReturnType<typeof setTimeout> | undefined;
 
     private readonly onDocumentPointerDown = (event: Event): void => {
         const target = event.target as Node;
@@ -200,6 +283,7 @@ export class MultiSelectView {
     ) {
         ensureStyles(container.ownerDocument);
         const doc = container.ownerDocument;
+        this.uid = newInstanceId(doc);
         const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] => {
             const node = doc.createElement(tag);
             if (className) node.className = className;
@@ -560,8 +644,12 @@ export class MultiSelectView {
         return link;
     }
 
-    /** The list's height with room to spare: four rows under Select all, five without it. */
+    /**
+     * The list's height with room to spare: four rows under Select all, five without it (the list takes its place). With
+     * columns under each option, four two-line rows either way.
+     */
     private listMaxHeight(): number {
+        if (this.menu.classList.contains("is-with-details")) return DETAILS_LIST_MAX_HEIGHT;
         return this.menu.classList.contains("is-without-select-all") ? LIST_MAX_HEIGHT + ROW_HEIGHT : LIST_MAX_HEIGHT;
     }
 
@@ -579,9 +667,13 @@ export class MultiSelectView {
         this.selectAllRow.style.display = selectAllShown ? "" : "none";
         // Without Select all, the list takes its place: five rows, and the menu keeps its height.
         this.menu.classList.toggle("is-without-select-all", !selectAllShown);
+        this.menu.classList.toggle("is-with-details", !!state.withDetails);
         this.selectAllRow.setAttribute("aria-selected", String(allSelected));
         this.selectAllCheck.textContent = allSelected ? GLYPH.checked : GLYPH.unchecked;
         this.countText.textContent = this.t.itemCount(state.options.length);
+        // The highlight was on Select all, which no longer shows (the limit was reached, a filter changed): it goes, rather
+        // than stay on a row nobody sees, where Enter would do nothing. The keys bring it back.
+        if (this.current === -1 && !selectAllShown) this.current = null;
         this.selectAllRow.classList.toggle("is-current", this.keyboardHighlight && this.current === -1);
 
         this.note.textContent = state.note ?? "";
@@ -605,8 +697,13 @@ export class MultiSelectView {
         } else {
             this.refreshRows(state);
         }
-        if (this.highlightWhenLoaded && this.open && state.options.length > 0) {
-            this.highlightFirstRow();
+        if (this.pendingKeys.length > 0 && this.open && !this.waitingForRows() && !state.loadingMore) {
+            this.applyPendingKeys();
+        }
+        // "+ New" went away without the rows changing.
+        if (!state.createLabel && this.current !== null && this.current >= state.options.length) {
+            this.current = null;
+            this.updateActiveDescendant();
         }
         this.createButton.classList.toggle("is-current", this.keyboardHighlight && !!state.createLabel && this.current === state.options.length);
     }
@@ -616,7 +713,8 @@ export class MultiSelectView {
         const previous = this.renderedOptions;
         // "Load more" only appends rows: keep the existing ones and the scroll position.
         const appended = previous !== null && previous.length > 0 && state.options.length >= previous.length && previous.every((o, i) => state.options[i] === o);
-        const onCreate = !!state.createLabel && previous !== null && this.current === previous.length;
+        // The highlight is on "+ New" (always the stop after the last row).
+        const onCreate = previous !== null && this.current === previous.length;
         const scrollTop = this.list.scrollTop;
         this.renderedOptions = state.options;
         this.list.querySelectorAll("li.ntnms-status").forEach((row) => row.remove());
@@ -640,6 +738,20 @@ export class MultiSelectView {
             text.className = "ntnms-option-text";
             text.textContent = item.name;
             row.append(check, text);
+            if (state.withDetails && item.details) {
+                // The chosen columns, on a second line under the name, as a lookup shows them.
+                const details = doc.createElement("div");
+                details.className = "ntnms-option-details";
+                details.textContent = item.details;
+                row.classList.add("has-details");
+                row.append(details);
+                // The tooltip (the name) goes on the two lines: on the row, where it would differ from the option's name
+                // (the name and the columns), screen readers would read it out as a description, the name a second time.
+                row.removeAttribute("title");
+                check.title = item.name;
+                text.title = item.name;
+                details.title = item.name;
+            }
             row.dataset.index = String(index);
             this.optionRows.set(item.id, row);
             fragment.appendChild(row);
@@ -654,7 +766,9 @@ export class MultiSelectView {
         }
         this.list.appendChild(fragment);
         if (onCreate) {
-            this.current = state.options.length; // "+ New" is always last
+            // "+ New" is always last. Gone (the user may no longer create records): the highlight goes too, rather than
+            // land on a record that Enter would then pick.
+            this.current = state.createLabel ? state.options.length : null;
         } else if (this.current !== null && this.current >= state.options.length) {
             this.current = state.options.length ? state.options.length - 1 : null;
         }
@@ -815,7 +929,9 @@ export class MultiSelectView {
         const room = (this.placeAbove ? rect.top - area.top : area.bottom - rect.bottom) - 8;
         const fixedPart = this.menu.offsetHeight - this.list.offsetHeight;
         if (room > 0 && this.menu.offsetHeight > 0) {
-            this.list.style.maxHeight = `${Math.max(ROW_HEIGHT, Math.min(this.listMaxHeight(), Math.floor(room - fixedPart)))}px`;
+            // At least one whole row, even in a window too short for the list.
+            const minimum = this.menu.classList.contains("is-with-details") ? DETAILS_ROW_HEIGHT : ROW_HEIGHT;
+            this.list.style.maxHeight = `${Math.max(minimum, Math.min(this.listMaxHeight(), Math.floor(room - fixedPart)))}px`;
         }
         if (this.placeAbove) {
             style.top = "";
@@ -982,7 +1098,7 @@ export class MultiSelectView {
             }
             this.searchTerm = this.input.value;
             this.current = null;
-            this.highlightWhenLoaded = false;
+            this.clearPendingKeys();
             if (!this.open) this.openMenu();
             this.callbacks.onSearch(this.searchTerm);
         });
@@ -1013,7 +1129,11 @@ export class MultiSelectView {
             else if (s && this.expanded && this.chipCurrent !== null) this.scrollChipIntoView(s.selected.findIndex((i) => i.id === this.chipCurrent));
         });
         this.menu.addEventListener("mousedown", (e) => e.preventDefault());
-        this.selectAllRow.addEventListener("click", () => this.toggleAll());
+        this.selectAllRow.addEventListener("click", () => {
+            // The mouse takes over: keys still waiting for rows no longer apply.
+            this.clearPendingKeys();
+            this.toggleAll();
+        });
         this.createButton.addEventListener("click", () => {
             if (!this.editable()) return;
             this.startCreate();
@@ -1026,6 +1146,8 @@ export class MultiSelectView {
             if (!item) return;
             this.current = index;
             this.keyboardHighlight = false;
+            // The mouse takes over: keys still waiting for the next page no longer apply (they would move from this row).
+            this.clearPendingKeys();
             this.toggle(item, !this.isSelected(item.id));
         });
         // A selected row the mouse leaves stays lighter, like in the native list (see visitedRows). One listener for
@@ -1053,11 +1175,8 @@ export class MultiSelectView {
         if (!s || !this.editable()) return;
         this.keyboardHighlight = true;
         this.openedRecord = false;
-        const count = s.options.length;
-        const firstIndex = s.canSelectAll && count > 0 ? -1 : 0;
-        // The optional "+ New" button is the last keyboard stop (index === count).
-        const lastIndex = s.createLabel ? count : count - 1;
-        const empty = lastIndex < 0;
+        // No keyboard stop at all: no rows, no "+ New" (see highlightStops). Page keys then stay with the search box.
+        const empty = this.highlightStops(s)[1] < 0;
 
         // Keys pressed before quick create of "+ New" has taken the focus are not for the list (see startCreate).
         if (this.creating) return;
@@ -1073,12 +1192,10 @@ export class MultiSelectView {
                 if (!this.open) {
                     // Down and Alt+Down open the list with the first row already highlighted, like the native control.
                     this.openMenu();
-                    this.highlightFirstRow();
+                    this.navigate("next");
                     return;
                 }
-                if (empty) return;
-                this.current = this.current === null ? firstIndex : Math.min(this.current + 1, lastIndex);
-                this.refreshRowsAndScroll();
+                this.navigate("next");
                 return;
             }
             case "ArrowUp": {
@@ -1087,26 +1204,21 @@ export class MultiSelectView {
                     this.closeMenu();
                     return;
                 }
-                if (!this.open || empty) return;
-                this.current = this.current === null ? lastIndex : Math.max(this.current - 1, firstIndex);
-                this.refreshRowsAndScroll();
+                if (this.open) this.navigate("previous");
                 return;
             }
             case "PageDown":
             case "PageUp": {
-                if (!this.open || empty) return;
+                if (!this.open || (empty && !this.waitingForRows())) return;
                 e.preventDefault();
-                const step = e.key === "PageDown" ? 4 : -4;
-                this.current = Math.max(firstIndex, Math.min(lastIndex, (this.current ?? 0) + step));
-                this.refreshRowsAndScroll();
+                this.navigate(e.key === "PageDown" ? "pageDown" : "pageUp");
                 return;
             }
             case "Home":
             case "End": {
-                if (!this.open || empty || !e.ctrlKey) return;
+                if (!this.open || (empty && !this.waitingForRows()) || !e.ctrlKey) return;
                 e.preventDefault();
-                this.current = e.key === "Home" ? firstIndex : lastIndex;
-                this.refreshRowsAndScroll();
+                this.navigate(e.key === "Home" ? "first" : "last");
                 return;
             }
             case "Enter": {
@@ -1116,10 +1228,16 @@ export class MultiSelectView {
                     return;
                 }
                 e.preventDefault();
+                // Nothing to pick yet: the row the keys lead to isn't known until the rows arrive.
+                if (this.waitingForRows() || this.pendingKeys.length > 0) return;
                 this.activateCurrent();
                 return;
             }
             case " ": {
+                if (this.open && this.input.value === "" && this.pendingKeys.length > 0) {
+                    e.preventDefault();
+                    return;
+                }
                 if (this.open && this.current !== null && this.input.value === "") {
                     e.preventDefault();
                     this.activateCurrent();
@@ -1237,7 +1355,7 @@ export class MultiSelectView {
                 if (e.key === "ArrowDown") {
                     e.preventDefault();
                     this.openMenu();
-                    this.highlightFirstRow();
+                    if (this.open) this.navigate("next");
                 }
                 return;
             default:
@@ -1388,16 +1506,108 @@ export class MultiSelectView {
         this.announce(allSelected ? this.t.announceAllRemoved(s.options.length) : this.t.announceAllSelected(s.options.length));
     }
 
-    /** Highlights "Select all" (or the first record). If the list is still loading, that happens when it arrives. */
-    private highlightFirstRow(): void {
+    /**
+     * Moves the highlight of the open list with a key. While the list waits for its rows, the key is kept and moves it
+     * once they arrive (see pendingKeys, applyPendingKeys).
+     */
+    private navigate(key: NavigationKey): void {
         const s = this.state;
-        if (!s || s.options.length === 0) {
-            this.highlightWhenLoaded = true;
+        if (!s || !this.open) return;
+        // While the list waits for its rows, or for the next page of a large table when the key goes past the last row
+        // loaded (or keys wait already), the key waits too. Otherwise "+ New" would come before the records still on
+        // their way, and Enter would open quick create instead of picking the next record.
+        const pastLoaded = this.waitsForMore(s) && (this.pendingKeys.length > 0 || passesLoaded(this.current, key, s.options.length));
+        if (this.waitingForRows() || pastLoaded) {
+            this.queueKey(key);
+            // The next page comes as when the list is scrolled to its end.
+            if (pastLoaded && !s.loadingMore) this.callbacks.onLoadMore();
             return;
         }
-        this.highlightWhenLoaded = false;
-        this.current = s.canSelectAll ? -1 : 0;
+        // Also when the highlight can't move: the key shows it, with the keyboard's outline.
+        this.current = moveHighlight(this.current, key, ...this.highlightStops(s));
         this.refreshRowsAndScroll();
+    }
+
+    /**
+     * Keeps `key` for when the rows arrive (see navigate). Ctrl+Home and Ctrl+End go to a stop of their own, whatever came
+     * before them: the keys before are dropped, and they are always kept. A key held down repeats, so the same key in a
+     * row is counted rather than kept again and again, however long it is held. The changes of key kept are bounded
+     * (MAX_PENDING_RUNS): past that, every later key but Ctrl+Home and Ctrl+End is dropped too, so the keys kept always
+     * lead where the user's first keys led, never to a stop the user's keys didn't reach.
+     */
+    private queueKey(key: NavigationKey): void {
+        if (key === "first" || key === "last") {
+            this.pendingKeys = [{ key, count: 1 }];
+            this.pendingFull = false;
+            return;
+        }
+        if (this.pendingFull) return;
+        const lastRun = this.pendingKeys[this.pendingKeys.length - 1];
+        if (lastRun?.key === key) lastRun.count++;
+        else if (this.pendingKeys.length < MAX_PENDING_RUNS) this.pendingKeys.push({ key, count: 1 });
+        else this.pendingFull = true;
+    }
+
+    /** Drops the keys kept while the list waits (see queueKey): a click took over, the list closed, or they were used. */
+    private clearPendingKeys(): void {
+        this.pendingKeys = [];
+        this.pendingFull = false;
+    }
+
+    /**
+     * The rows have arrived (or the list has none, or failed to load), or the next page has: the keys pressed meanwhile
+     * move the highlight. A key that goes past the rows loaded while there are more waits for the next page.
+     */
+    private applyPendingKeys(): void {
+        const s = this.state;
+        if (!s) {
+            this.clearPendingKeys();
+            return;
+        }
+        const [first, last] = this.highlightStops(s);
+        let current = this.current;
+        while (this.pendingKeys.length > 0) {
+            const run = this.pendingKeys[0];
+            if (this.waitsForMore(s) && passesLoaded(current, run.key, s.options.length)) {
+                // Not from inside the render that brought the rows; and not once the list is closed or gone.
+                if (!s.loadingMore && this.loadMoreTimer === undefined) {
+                    this.loadMoreTimer = setTimeout(() => {
+                        this.loadMoreTimer = undefined;
+                        if (this.open && !this.destroyed && this.pendingKeys.length > 0) this.callbacks.onLoadMore();
+                    }, 0);
+                }
+                break;
+            }
+            current = moveHighlight(current, run.key, first, last);
+            run.count--;
+            if (run.count === 0) this.pendingKeys.shift();
+        }
+        if (this.pendingKeys.length === 0) this.pendingFull = false;
+        this.current = current;
+        this.refreshRowsAndScroll();
+    }
+
+    /** A large table's list has more records to load (and loading them hasn't failed): they come before "+ New". */
+    private waitsForMore(s: ViewState): boolean {
+        return s.hasMore && !s.loadMoreError && s.options.length > 0;
+    }
+
+    /**
+     * The first and last stops of the keyboard in the list: Select all (-1) when it shows, the records, then the optional
+     * "+ New" (the index after the last record).
+     */
+    private highlightStops(s: ViewState): [number, number] {
+        const count = s.options.length;
+        return [s.canSelectAll && count > 0 ? -1 : 0, s.createLabel ? count : count - 1];
+    }
+
+    /**
+     * The open list has no rows yet because they are still on their way (the first page, or a new search): where the keys
+     * lead isn't known until they arrive. Meanwhile "+ New" would be the only stop.
+     */
+    private waitingForRows(): boolean {
+        const s = this.state;
+        return this.open && !!s && s.options.length === 0 && (s.optionsStatus === "loading" || s.optionsStatus === "idle");
     }
 
     private refreshRowsAndScroll(): void {
@@ -1473,7 +1683,7 @@ export class MultiSelectView {
         const area = this.visibleArea();
         const below = area.bottom - rect.bottom;
         const above = rect.top - area.top;
-        this.placeAbove = below < MENU_MAX_HEIGHT + 8 && above > below;
+        this.placeAbove = below < menuMaxHeight(!!this.state?.withDetails) + 8 && above > below;
         this.openedVisible = rect.width > 0 || rect.height > 0;
         this.lastPlacementKey = "";
         this.positionMenu();
@@ -1486,7 +1696,9 @@ export class MultiSelectView {
         if (!this.open) return;
         this.open = false;
         this.current = null;
-        this.highlightWhenLoaded = false;
+        this.clearPendingKeys();
+        clearTimeout(this.loadMoreTimer);
+        this.loadMoreTimer = undefined;
         const win = this.container.ownerDocument.defaultView;
         if (this.followFrame && win) win.cancelAnimationFrame(this.followFrame);
         this.followFrame = 0;
@@ -1579,6 +1791,7 @@ export class MultiSelectView {
         this.closeMenu(false);
         this.destroyed = true;
         clearTimeout(this.announceTimer);
+        clearTimeout(this.loadMoreTimer);
         this.resizeObserver?.disconnect();
         const win = this.container.ownerDocument.defaultView;
         if (this.measureFrame && win) win.cancelAnimationFrame(this.measureFrame);

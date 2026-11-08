@@ -15,6 +15,7 @@ interface XrmAttribute {
     removeOnChange?(handler: () => void): void;
     getSubmitMode?(): string;
     setSubmitMode?(mode: string): void;
+    getIsDirty?(): boolean;
     getRequiredLevel?(): string;
     setRequiredLevel?(level: string): void;
     controls?: { get(): XrmFieldControl[] };
@@ -64,6 +65,13 @@ const lifts = new WeakMap<object, Map<string, Lift>>();
  */
 const PUT_BACK_LIMIT = 3;
 const PUT_BACK_WINDOW_MS = 2000;
+
+/**
+ * Whether the form saves the column: "never" (the names are only shown), or "dirty" while changes wait for the record's
+ * save ("Save the selection" = With the record): the form then shows unsaved changes, until the control's own OnSave
+ * handler switches the column back to "never" (see markNever), so the form never writes it.
+ */
+export type SubmitMode = "never" | "dirty";
 
 /** With "Selection on the form" = Event, what HostField.show tells the form. */
 export interface Report {
@@ -155,6 +163,26 @@ export class HostField {
         return !!other && other.page === this.page && other.entityName === this.entityName && other.column === this.column;
     }
 
+    /** Whether `other` is bound to the same column of the same table, on any form of the page (see sameField). */
+    public sameColumn(other: HostField | null): boolean {
+        return !!other && other.entityName === this.entityName && other.column === this.column;
+    }
+
+    /** The column's value on the form of `recordId` (undefined when the form isn't found). */
+    public valueOn(recordId: string | null): string | null | undefined {
+        const attribute = this.attribute(recordId);
+        try {
+            return attribute ? ((attribute.getValue() as string | null | undefined) ?? null) : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
+    /** Whether the column is on the form of `recordId` (see attribute). */
+    public isOnForm(recordId: string | null): boolean {
+        return !!this.attribute(recordId);
+    }
+
     /** Whether the column is required on the form of `recordId`: Business required, or made so by a rule or script. */
     public isRequired(recordId: string | null): boolean {
         try {
@@ -191,8 +219,10 @@ export class HostField {
      *   moment later gets PUT_BACK_LIMIT runs in a row, then the names back without OnChange, so it isn't started again;
      * - when a new record's picks are `linked`, or the writes the names were kept for are done, and the last OnChange saw
      *   other names (see Shown.saw).
+     *
+     * `submit` "dirty": the names are changes waiting for the record's save (see SubmitMode).
      */
-    public show(recordId: string | null, text: string | null, ids: string, report: Report | null = null): boolean {
+    public show(recordId: string | null, text: string | null, ids: string, report: Report | null = null, submit: SubmitMode = "never"): boolean {
         const attribute = this.attribute(recordId);
         if (!attribute) return false;
         if (report) this.watchOnChange(attribute);
@@ -203,8 +233,8 @@ export class HostField {
         let lastPutBack = before?.lastPutBack;
         let told = false;
         try {
-            // First, so that the value never counts as a change to save.
-            if (attribute.getSubmitMode?.() !== "never") attribute.setSubmitMode?.("never");
+            // First, so that the value counts as a change to save only while it waits for the save (see SubmitMode).
+            if (attribute.getSubmitMode?.() !== submit) attribute.setSubmitMode?.(submit);
             const value = (attribute.getValue() as string | null | undefined) ?? null;
             const newValue = value !== text;
             if (newValue) attribute.setValue(text);
@@ -223,6 +253,33 @@ export class HostField {
         this.noteShown({ recordId, ids, value: text, saw: told ? text : before?.saw, putBacks, lastPutBack });
         this.lock(attribute);
         return true;
+    }
+
+    /**
+     * The form is saving (OnSave): the column isn't part of the save. Its value stays, so scripts in OnSave and the
+     * form's check still see the names.
+     */
+    public markNever(recordId: string | null): void {
+        const attribute = this.attribute(recordId);
+        try {
+            if (attribute && attribute.getSubmitMode?.() !== "never") attribute.setSubmitMode?.("never");
+        } catch {
+            // The form is being closed.
+        }
+    }
+
+    /**
+     * Whether the column counts as an unsaved change on the form of `recordId`; null when the form doesn't say. The form
+     * compares the value with the one it loaded: names equal to those make no change.
+     */
+    public isDirty(recordId: string | null): boolean | null {
+        const attribute = this.attribute(recordId);
+        try {
+            const dirty = attribute?.getIsDirty?.();
+            return typeof dirty === "boolean" ? dirty : null;
+        } catch {
+            return null;
+        }
     }
 
     /** The new record on the form was saved as `recordId`: what its column showed there is that record's now. */

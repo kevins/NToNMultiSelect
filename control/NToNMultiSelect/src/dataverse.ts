@@ -182,7 +182,8 @@ export class DataverseClient {
         }
         const json = body === undefined ? undefined : JSON.stringify(body);
         const init: RequestInit = { method, headers, body: json };
-        if (options.keepalive && json !== undefined && new TextEncoder().encode(json).length <= KEEPALIVE_MAX_BYTES) {
+        // A request without a body (a link removed) takes none of the browsers' 64 KiB.
+        if (options.keepalive && (json === undefined || new TextEncoder().encode(json).length <= KEEPALIVE_MAX_BYTES)) {
             init.keepalive = true;
         }
         await this.request(this.resolve(path), init);
@@ -223,8 +224,13 @@ export class DataverseClient {
             } else if (failure) {
                 retryable = isNetworkError(failure);
                 // A browser also refuses a keepalive request on the spot, like a dropped connection, when the bodies of
-                // all keepalive requests on their way from the page would pass 64 KiB: resend it as an ordinary one.
-                if (retryable && init.keepalive) init = { ...init, keepalive: false };
+                // all keepalive requests on their way from the page would pass 64 KiB, or there are too many of them:
+                // resend it as an ordinary one, at once (a refusal is no reason to wait; a real drop gets the usual
+                // pauses on the next tries).
+                if (retryable && init.keepalive) {
+                    init = { ...init, keepalive: false };
+                    if (attempt < MAX_RETRIES) continue;
+                }
             } else {
                 retryable = isRetryableStatus(reply!.status);
             }

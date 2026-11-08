@@ -26,6 +26,7 @@ export type QueryProblem =
     | { kind: "viewNotFound"; view: string; table: string; views: { name: string; id: string }[] }
     | { kind: "viewTranslated"; view: string; id: string }
     | { kind: "viewOtherTable"; view: string; table: string; expected: string }
+    | { kind: "columnNotFound"; column: string; table: string }
     | { kind: "tooLong" };
 
 /** Enough names to spot a typo, few enough to keep the message readable. */
@@ -72,6 +73,8 @@ function describe(problem: QueryProblem, t: Strings): string {
             return t.viewTranslated(problem.view, problem.id);
         case "viewOtherTable":
             return t.viewOtherTable(problem.view, problem.table, problem.expected);
+        case "columnNotFound":
+            return t.columnNotFound(problem.column, problem.table);
         case "tooLong":
             return t.queryTooLong;
     }
@@ -101,6 +104,14 @@ export interface FetchCondition {
     operator: string;
     value: string;
 }
+
+/** Conditions of which any one is enough: a search over the name and the columns under each option. */
+export interface FetchAnyOf {
+    anyOf: FetchCondition[];
+}
+
+/** What firstPageFetch adds to the query; all of them must match. */
+export type FetchTerm = FetchCondition | FetchAnyOf;
 
 /**
  * Reads the FetchXML setting of a list that uses a view or FetchXML, and checks that the settings go together.
@@ -211,10 +222,11 @@ function linkAlias(doc: Document, link: Element): string | null {
  * under an entity are combined with AND). The filters and the sort order of a view or complete query are kept: the
  * entity's orders, then the orders of lookup links (moved to the entity with entityname, where Dataverse applies them
  * after the entity's own), and the id last, so that the order is unique, which paging needs. A generated query, or
- * one with no order the list can follow, is sorted by name and then id. The columns become the id and the name, and
- * any paging or row limit in the source is dropped.
+ * one with no order the list can follow, is sorted by name and then id. The columns become the id and the name, then
+ * `columns` (the logical names of the columns under each option, if any), and any paging or row limit in the source is
+ * dropped.
  */
-export function buildListFetch(rel: RelationshipInfo, setting: FetchSetting, viewFetchXml: string | null, showInactive: boolean): string {
+export function buildListFetch(rel: RelationshipInfo, setting: FetchSetting, viewFetchXml: string | null, showInactive: boolean, columns: string[] = []): string {
     let doc: Document;
     if (viewFetchXml !== null) {
         doc = parseXml(viewFetchXml);
@@ -268,6 +280,7 @@ export function buildListFetch(rel: RelationshipInfo, setting: FetchSetting, vie
     entity.prepend(
         element(doc, "attribute", { name: rel.targetIdAttribute }),
         element(doc, "attribute", { name: rel.targetNameAttribute }),
+        ...columns.map((name) => element(doc, "attribute", { name })),
         ...sorted.map((order) => element(doc, "order", order)),
     );
     // A link to the "many" side returns a row per match; the list needs each record once.
@@ -283,7 +296,7 @@ export function buildListFetch(rel: RelationshipInfo, setting: FetchSetting, vie
 }
 
 /** The first page of `count` records of a list query, narrowed by extra conditions (the search, the record itself). */
-export function firstPageFetch(xml: string, count: number, conditions: FetchCondition[]): string {
+export function firstPageFetch(xml: string, count: number, conditions: FetchTerm[]): string {
     const doc = parseXml(xml);
     const fetch = doc.documentElement;
     fetch.setAttribute("count", String(count));
@@ -377,10 +390,20 @@ function element(doc: Document, name: string, attributes: Record<string, string>
     return el;
 }
 
-function andFilter(doc: Document, conditions: FetchCondition[]): Element {
+function andFilter(doc: Document, conditions: FetchTerm[]): Element {
     const el = element(doc, "filter", { type: "and" });
     for (const condition of conditions) {
-        el.appendChild(element(doc, "condition", { attribute: condition.attribute, operator: condition.operator, value: condition.value }));
+        el.appendChild("anyOf" in condition ? anyOfFilter(doc, condition.anyOf) : conditionElement(doc, condition));
     }
     return el;
+}
+
+function anyOfFilter(doc: Document, conditions: FetchCondition[]): Element {
+    const el = element(doc, "filter", { type: "or" });
+    for (const condition of conditions) el.appendChild(conditionElement(doc, condition));
+    return el;
+}
+
+function conditionElement(doc: Document, condition: FetchCondition): Element {
+    return element(doc, "condition", { attribute: condition.attribute, operator: condition.operator, value: condition.value });
 }

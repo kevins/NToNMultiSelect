@@ -40,9 +40,7 @@ export interface Strings {
     newRecord(table: string): string;
     maxNote(max: number): string;
     maxReached(max: number): string;
-    heldHint: string;
     saveFirst: string;
-    offline: string;
     notOnForm: string;
     noRelationship: string;
     notManyToMany(relationship: string, table: string, relationships: string[]): string;
@@ -75,6 +73,8 @@ export interface Strings {
     viewNotFound(view: string, table: string, views: string[]): string;
     viewTranslated(view: string, id: string): string;
     viewOtherTable(view: string, table: string, expected: string): string;
+    /** "Columns to show" names a column the table doesn't have, or one that can't be shown under the options. */
+    columnNotFound(column: string, table: string): string;
     queryTooLong: string;
 }
 
@@ -107,9 +107,7 @@ const en: Strings = {
     newRecord: (table) => `New ${table}`,
     maxNote: (max) => `You can select up to ${max} ${max === 1 ? "record" : "records"}.`,
     maxReached: (max) => `Maximum reached: you can select up to ${max} ${max === 1 ? "record" : "records"}.`,
-    heldHint: "Your selections are linked when you save the record.",
     saveFirst: "Save the record first, then pick values here.",
-    offline: "Not available while you're offline.",
     notOnForm: "This control can only be used on a model-driven form.",
     noRelationship: "Set the N:N relationship schema name in the control properties.",
     notManyToMany: (relationship, table, relationships) =>
@@ -143,6 +141,8 @@ const en: Strings = {
     viewNotFound: (view, table, views) => `There is no active view "${view}" for the table ${table}.${views.length ? ` Views of this table and their ids: ${views.join(", ")}.` : ""}`,
     viewTranslated: (view, id) => `"${view}" is a translated view name, which differs from one language to another. Enter the id of the view instead: ${id}.`,
     viewOtherTable: (view, table, expected) => `The view "${view}" belongs to the table ${table}, but this relationship links ${expected} records. Choose a view of ${expected}.`,
+    columnNotFound: (column, table) =>
+        `The table ${table} has no column "${column}" that can be shown under the options. Enter the logical name of a text, choice, yes/no, number, date or lookup column.`,
     queryTooLong: "The query is too long to send to the server. Shorten the filters of the view or the FetchXML filter.",
 };
 
@@ -178,9 +178,7 @@ const fr: Strings = {
     newRecord: (table) => `Nouveau (${table})`,
     maxNote: (max) => `Vous pouvez sélectionner jusqu'à ${max} ${max <= 1 ? "enregistrement" : "enregistrements"}.`,
     maxReached: (max) => `Maximum atteint\u00a0: vous pouvez sélectionner jusqu'à ${max} ${max <= 1 ? "enregistrement" : "enregistrements"}.`,
-    heldHint: "Vos choix seront liés lorsque vous enregistrerez la fiche.",
     saveFirst: "Enregistrez d'abord la fiche, puis choisissez des valeurs ici.",
-    offline: "Non disponible hors connexion.",
     notOnForm: "Ce contrôle ne peut être utilisé que sur un formulaire d'application pilotée par modèle.",
     noRelationship: "Indiquez le nom de schéma de la relation N:N dans les propriétés du contrôle.",
     notManyToMany: (relationship, table, relationships) =>
@@ -222,6 +220,8 @@ const fr: Strings = {
     viewTranslated: (view, id) => `«\u00a0${view}\u00a0» est un nom de vue traduit, qui change d'une langue à l'autre. Indiquez plutôt l'identifiant de la vue\u00a0: ${id}.`,
     viewOtherTable: (view, table, expected) =>
         `La vue «\u00a0${view}\u00a0» appartient à la table ${table}, alors que cette relation lie des enregistrements de ${expected}. Choisissez une vue de ${expected}.`,
+    columnNotFound: (column, table) =>
+        `La table ${table} n'a pas de colonne «\u00a0${column}\u00a0» pouvant être affichée sous les options. Indiquez le nom logique d'une colonne de texte, de choix, oui/non, de nombre, de date ou de recherche.`,
     queryTooLong: "La requête est trop longue pour être envoyée au serveur. Raccourcissez les filtres de la vue ou le filtre FetchXML.",
 };
 

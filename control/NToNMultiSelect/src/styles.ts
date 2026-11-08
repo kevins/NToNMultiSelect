@@ -83,9 +83,19 @@ const CSS = `
 .ntnms-note{padding:0 13px 6px;color:#616161;font-size:12px;line-height:16px;cursor:default}
 .ntnms-check{position:absolute;inset-inline-start:14px;top:50%;margin-top:-6px;width:12px;height:12px;font-family:"CRM MDL2","Segoe Fluent Icons","Segoe MDL2 Assets";font-size:12px;line-height:12px;speak:none}
 .ntnms-option-text{flex:1 1 auto;min-width:0;padding:8px 0 7px;padding-inline-start:35px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+/* "Columns under each option": the name, then the columns on a smaller grey line, as a lookup shows them. Each stays on
+   one line, cut short with an ellipsis, and the check is centred on the two (owner's choice). On a selected row the grey
+   is darker, so it keeps its contrast on the grey background. */
+.ntnms-option.has-details{flex-direction:column;align-items:stretch;justify-content:center;min-height:51px}
+.ntnms-option.has-details .ntnms-option-text{flex:none;padding-bottom:0}
+.ntnms-option-details{padding:0 0 7px;padding-inline-start:35px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#616161;font-size:12px;line-height:16px}
+.ntnms-option.is-selected .ntnms-option-details{color:#424242}
+.ntnms-option.is-disabled .ntnms-option-details{color:inherit}
 .ntnms-count{flex:0 0 auto;padding:0 14px;color:#242424;white-space:nowrap}
 .ntnms-list{position:relative;margin:0;padding:0;list-style:none;max-height:140px;overflow-x:hidden;overflow-y:auto;outline:none}
 .ntnms-menu.is-without-select-all .ntnms-list{max-height:175px}
+/* With columns under each option: four whole two-line rows, with or without Select all (owner's choice) */
+.ntnms-menu.is-with-details .ntnms-list,.ntnms-menu.is-with-details.is-without-select-all .ntnms-list{max-height:204px}
 .ntnms-menu .ntnms-create{position:relative;display:block;box-sizing:border-box;width:100%;height:35px;margin:0;padding:0 13px;border:0;border-top:1px solid #e1dfdd;background:transparent;color:#2975b2;font:inherit;text-align:start;cursor:pointer;outline:none}
 .ntnms-menu .ntnms-create.is-current::after{content:"";position:absolute;top:0;right:0;bottom:0;left:0;border:1px solid #000;pointer-events:none}
 .ntnms-menu .ntnms-create:hover{background:#efefef;color:#6199d1}
@@ -95,7 +105,7 @@ const CSS = `
    also under the mouse and once the mouse has left them (the rules above would otherwise win). forced-color-adjust is
    inherited, so the keyboard outline of a selected row keeps its literal black unless it gets the matching colour.
    Rows blocked by Maximum selections would lose their grey text as well: they get the system colour for disabled text. */
-@media (forced-colors:active){.ntnms-option.is-selected,.ntnms-option.is-selected.is-visited,.ntnms-option.is-selected:hover{forced-color-adjust:none;background:Highlight;color:HighlightText}.ntnms-option.is-selected.is-current::after{border-color:HighlightText}.ntnms-option.is-disabled,.ntnms-option.is-disabled:hover{color:GrayText}}
+@media (forced-colors:active){.ntnms-option.is-selected,.ntnms-option.is-selected.is-visited,.ntnms-option.is-selected:hover{forced-color-adjust:none;background:Highlight;color:HighlightText}.ntnms-option.is-selected.is-current::after{border-color:HighlightText}.ntnms-option.is-selected .ntnms-option-details{color:HighlightText}.ntnms-option.is-disabled,.ntnms-option.is-disabled:hover{color:GrayText}}
 
 /* read-only */
 .ntnms.is-disabled{padding:0;padding-inline-start:13px;border:1px solid #efefef;background-color:#efefef;color:#333}
@@ -114,7 +124,7 @@ const CSS = `
 .ntnms-error-dismiss{margin-inline-start:auto;padding:0 2px;border:0;background:transparent;color:#a4262c;font-size:12px;cursor:pointer;text-decoration:underline}
 `;
 
-const STYLE_ID = "ntnms-styles-v9";
+const STYLE_ID = "ntnms-styles-v10";
 
 export function ensureStyles(doc: Document = document): void {
     if (doc.getElementById(STYLE_ID)) {

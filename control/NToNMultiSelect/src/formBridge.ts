@@ -18,36 +18,74 @@ interface XrmFormContext {
         entity?: {
             getId(): string;
             getEntityName(): string;
+            getIsDirty?(): boolean;
             addOnPostSave?(handler: (ctx: unknown) => void): void;
             removeOnPostSave?(handler: (ctx: unknown) => void): void;
             addOnSave?(handler: (ctx: unknown) => void): void;
             removeOnSave?(handler: (ctx: unknown) => void): void;
         };
+        addOnLoad?(handler: (ctx: unknown) => void): void;
+        removeOnLoad?(handler: (ctx: unknown) => void): void;
+        save?(options?: { saveMode?: number }): Promise<unknown>;
     };
     ui?: {
         controls?: { get(): XrmGridControl[] };
         getFormType?(): number;
+        close?(): void;
+        formSelector?: { getCurrentItem?(): { getId?(): string } | null };
     };
     getControl?(name: string): XrmGridControl | null;
 }
 
-function formContext(): XrmFormContext | null {
-    const xrm = (window as unknown as { Xrm?: { Page?: XrmFormContext } }).Xrm;
-    const page = xrm?.Page;
+type XrmEntity = NonNullable<NonNullable<XrmFormContext["data"]>["entity"]>;
+
+/** The form of `xrm` (a page's window.Xrm, see FormBridge), or of window.Xrm now when it is null. */
+function formContext(xrm: object | null): XrmFormContext | null {
+    const page = ((xrm ?? (window as unknown as { Xrm?: object }).Xrm) as { Page?: XrmFormContext } | undefined)?.Page;
     return page && page.data && page.data.entity ? page : null;
 }
 
-/** The part of the save event arguments (executionContext.getEventArgs() in OnSave) the control reads. */
-interface SaveEventArgs {
+/** The part of the save event arguments (executionContext.getEventArgs() in OnSave) the control reads and uses. */
+export interface SaveEventArgs {
+    getSaveMode?(): number;
+    preventDefault?(): void;
     isDefaultPrevented?(): boolean;
 }
 
-function saveEventArgs(ctx: unknown): SaveEventArgs | null {
+/** The part of the post-save event arguments (executionContext.getEventArgs() in OnPostSave) the control reads. */
+interface PostSaveEventArgs {
+    getIsSaveSuccess?(): boolean;
+    getEntityReference?(): { id?: string } | null;
+}
+
+function eventArgs<T>(ctx: unknown): T | null {
     try {
-        return (ctx as { getEventArgs?(): SaveEventArgs | null } | null)?.getEventArgs?.() ?? null;
+        return (ctx as { getEventArgs?(): T | null } | null)?.getEventArgs?.() ?? null;
     } catch {
         return null;
     }
+}
+
+export function saveEventArgs(ctx: unknown): SaveEventArgs | null {
+    return eventArgs<SaveEventArgs>(ctx);
+}
+
+/** What followSaves reports about the saves of the record's form ("Save the selection" = With the record). */
+export interface SaveEvents {
+    /** OnSave, before the form saves the record. */
+    onSave(args: SaveEventArgs): void;
+    /** OnPostSave: whether the save succeeded (null when the form doesn't say) and the record it saved (null: unknown). */
+    onPostSave(success: boolean | null, savedId: string | null): void;
+    /** The form's data was loaded again: getDataLoadState (1 first load, 2 after a save, 3 a refresh), null: unknown. */
+    onDataLoad(state: number | null): void;
+}
+
+/** What onPostSave also reports about the save of a new record (see SaveEvents). */
+export interface NewRecordSaveEvents {
+    /** OnSave of the new record's save. */
+    onSave?(args: SaveEventArgs): void;
+    /** The save didn't create the record (OnPostSave without an id). */
+    onFailed?(): void;
 }
 
 /** Containers in which the page-level form API (Xrm.Page) describes another form than the control's. */
@@ -67,6 +105,16 @@ export class FormBridge {
     private savingNew = false;
     /** The event arguments of that save, which tell whether a handler cancelled it. */
     private saveArgs: SaveEventArgs | null = null;
+    /** The save that created the record was reported (see onPostSave): later saves are updates. */
+    private createReported = false;
+    /** The saved record whose saves are followed (see followSaves), with the handlers to remove. */
+    private following: {
+        form: XrmFormContext;
+        entity: XrmEntity;
+        onSave: (ctx: unknown) => void;
+        onPostSave: (ctx: unknown) => void;
+        onLoad: (ctx: unknown) => void;
+    } | null = null;
 
     constructor(
         private readonly entityName: string,
@@ -85,6 +133,12 @@ export class FormBridge {
          * are ever shown again.
          */
         private readonly hiddenGrids = new Set<string>(),
+        /**
+         * window.Xrm when the control was made (see HostField): the app swaps window.Xrm for that of a dialog or a quick
+         * create form while one is on top, so window.Xrm later may describe another form, of the same table too (its
+         * saves would be followed instead of this form's). Null: window.Xrm at each use.
+         */
+        private readonly xrm: object | null = null,
     ) {}
 
     public setSubgrids(names: string[]): void {
@@ -141,7 +195,7 @@ export class FormBridge {
     private form(recordId: string | null): XrmFormContext | null {
         // Under a dialog or side pane the page form is the one underneath, even when it shows the same record.
         if (this.inOverlay()) return null;
-        const form = formContext();
+        const form = formContext(this.xrm);
         const entity = form?.data?.entity;
         if (!form || !entity) {
             return null;
@@ -335,13 +389,14 @@ export class FormBridge {
      * brand-new record). Only attaches to an unsaved create form of the control's own table; returns false otherwise
      * (for example on a quick create form, where the page-level form API describes a different record).
      */
-    public onPostSave(handler: (recordId: string) => void): boolean {
+    public onPostSave(handler: (recordId: string) => void, events: NewRecordSaveEvents = {}): boolean {
         const entity = this.newRecordForm()?.data?.entity;
         if (!entity || typeof entity.addOnPostSave !== "function") {
             return false;
         }
         this.removePostSave();
         this.saveArgs = null;
+        this.createReported = false;
         if (typeof entity.addOnSave === "function") {
             this.savingNew = false;
             this.saveHandler = (ctx) => {
@@ -352,24 +407,25 @@ export class FormBridge {
                 } catch {
                     this.savingNew = true; // can't tell
                 }
+                if (this.savingNew && !this.createReported) events.onSave?.(this.saveArgs ?? {});
             };
             entity.addOnSave(this.saveHandler);
         } else {
             this.savingNew = true; // can't tell; assume an id change means a save
         }
-        let reported = false;
         this.postSaveHandler = () => {
             // Later saves of the same form are updates of that record, or saves of another record the form moved on
             // to: the handler stays attached until dispose, but only the save that creates the record is reported.
-            if (reported) return;
+            if (this.createReported) return;
             try {
                 const id = normalizeId(entity.getId());
                 if (id && this.savingNew) {
-                    reported = true;
+                    this.createReported = true;
                     handler(id);
                 } else if (!id && this.saveHandler) {
                     // The save failed: only a later save (OnSave again) can still create the record.
                     this.savingNew = false;
+                    events.onFailed?.();
                 }
             } catch {
                 // ignore
@@ -377,6 +433,19 @@ export class FormBridge {
         };
         entity.addOnPostSave(this.postSaveHandler);
         this.postSaveEntity = entity;
+        return true;
+    }
+
+    /**
+     * The first save of the form that `other` (a previous instance's bridge, on the same form) saw start and that is still
+     * under way: not reported, failed or seen cancelled. This bridge follows it from now on, as if it had seen its
+     * OnSave, so that its OnPostSave reports the new record here (see savedAs). True when there was one.
+     */
+    public takeOverSave(other: FormBridge): boolean {
+        if (!this.postSaveEntity || other.postSaveEntity !== this.postSaveEntity || !other.saveHandler) return false;
+        if (!other.savingNew || other.createReported || other.saveArgs?.isDefaultPrevented?.() === true) return false;
+        this.savingNew = true;
+        this.saveArgs = other.saveArgs;
         return true;
     }
 
@@ -408,8 +477,183 @@ export class FormBridge {
         this.postSaveEntity = null;
     }
 
+    /**
+     * Follows the saves of the saved record `recordId` on the page form ("Save the selection" = With the record): OnSave,
+     * OnPostSave and the form's data loads, until unfollowSaves. Returns false when the form can't be followed: the
+     * control isn't on the page form itself (quick create, a dialog, a side pane), or the form shows another record.
+     */
+    public followSaves(recordId: string, events: SaveEvents): boolean {
+        this.unfollowSaves();
+        if (!this.onPageForm()) return false;
+        const form = this.hostForm(recordId);
+        const entity = form?.data?.entity;
+        if (!form || !entity || typeof entity.addOnSave !== "function" || typeof entity.addOnPostSave !== "function") return false;
+        const onSave = (ctx: unknown): void => events.onSave(saveEventArgs(ctx) ?? {});
+        const onPostSave = (ctx: unknown): void => {
+            const args = eventArgs<PostSaveEventArgs>(ctx);
+            let success: boolean | null = null;
+            let savedId: string | null = null;
+            try {
+                const result = args?.getIsSaveSuccess?.();
+                if (typeof result === "boolean") success = result;
+            } catch {
+                // Not told.
+            }
+            try {
+                savedId = normalizeId(args?.getEntityReference?.()?.id) || null;
+            } catch {
+                // Not told.
+            }
+            if (!savedId) {
+                try {
+                    savedId = normalizeId(entity.getId()) || null;
+                } catch {
+                    // The form is being closed.
+                }
+            }
+            events.onPostSave(success, savedId);
+        };
+        const onLoad = (ctx: unknown): void => {
+            let state: number | null = null;
+            try {
+                const value = eventArgs<{ getDataLoadState?(): number }>(ctx)?.getDataLoadState?.();
+                if (typeof value === "number") state = value;
+            } catch {
+                // Not told.
+            }
+            events.onDataLoad(state);
+            // Once the other handlers of this load have run: the ones they added to OnSave run before the control's.
+            setTimeout(() => this.keepSaveHandlerLast(), 0);
+        };
+        try {
+            entity.addOnSave(onSave);
+            entity.addOnPostSave(onPostSave);
+            form.data?.addOnLoad?.(onLoad);
+        } catch {
+            return false;
+        }
+        this.following = { form, entity, onSave, onPostSave, onLoad };
+        // The scripts that run as the form finishes loading may add OnSave handlers of their own after this one.
+        setTimeout(() => this.keepSaveHandlerLast(), 0);
+        return true;
+    }
+
+    /**
+     * Puts the control's OnSave handler last on the followed form (see followSaves): a handler that can cancel the save
+     * (a validation script) then runs before it, and the control sees the save cancelled before it writes any link. A
+     * script that adds its handler after the form loaded comes after the control's (handlers run in the order they were
+     * added), so this runs again after each load of the form's data and whenever a change starts waiting for the save.
+     */
+    public keepSaveHandlerLast(): void {
+        const following = this.following;
+        if (!following) return;
+        const { entity, onSave } = following;
+        // Both or neither: a handler taken off and not put back would leave the saves unfollowed.
+        if (typeof entity.removeOnSave !== "function" || typeof entity.addOnSave !== "function") return;
+        try {
+            entity.removeOnSave(onSave);
+            entity.addOnSave(onSave);
+        } catch {
+            // The form is being closed.
+        }
+    }
+
+    public unfollowSaves(): void {
+        const following = this.following;
+        if (!following) return;
+        this.following = null;
+        try {
+            following.entity.removeOnSave?.(following.onSave);
+            following.entity.removeOnPostSave?.(following.onPostSave);
+            following.form.data?.removeOnLoad?.(following.onLoad);
+        } catch {
+            // The form is being closed.
+        }
+    }
+
+    /** The entity object of the followed form (see followSaves): the same object for every field on that form. */
+    public followedEntity(): object | null {
+        return this.following?.entity ?? null;
+    }
+
+    /** Whether the followed form has unsaved changes (see followSaves); null when it doesn't say. */
+    public followedIsDirty(): boolean | null {
+        try {
+            const dirty = this.following?.entity.getIsDirty?.();
+            return typeof dirty === "boolean" ? dirty : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Saves the followed form again, telling its OnSave handlers `saveMode` (the mode of a save that was cancelled), then
+     * does what that save would have done afterwards: Save & Close closes the form, Save & New opens a new one.
+     * Resolves to whether the record was saved.
+     */
+    public async saveAgain(saveMode: number, beforeLeaving?: () => void): Promise<boolean> {
+        const form = this.following?.form;
+        if (!form?.data?.save) return false;
+        try {
+            await form.data.save({ saveMode });
+        } catch {
+            return false;
+        }
+        // Before the form closes or a new one opens: what still counts as unsaved makes the form ask first.
+        beforeLeaving?.();
+        try {
+            if (saveMode === 2) {
+                form.ui?.close?.();
+            } else if (saveMode === 59) {
+                const formId = form.ui?.formSelector?.getCurrentItem?.()?.getId?.();
+                const navigation = (window as unknown as { Xrm?: { Navigation?: { openForm?(options: object): Promise<unknown> } } }).Xrm?.Navigation;
+                void navigation?.openForm?.({ entityName: this.entityName, ...(formId ? { formId } : {}) });
+            }
+        } catch {
+            // The record is saved; only closing or opening the next form failed.
+        }
+        return true;
+    }
+
+    /**
+     * "Write the links" = Before: adds `handler` to the OnSave event of the followed form while one of its saves runs its
+     * handlers. It then runs in that save, after all of them, those a script added after the control's included (measured
+     * live, see NToNMultiSelect.lastWord). Returns what takes it off again, or null when it can't be added.
+     */
+    public addSaveHandler(handler: (ctx: unknown) => void): (() => void) | null {
+        const entity = this.following?.entity;
+        if (!entity || typeof entity.addOnSave !== "function" || typeof entity.removeOnSave !== "function") return null;
+        try {
+            entity.addOnSave(handler);
+        } catch {
+            return null;
+        }
+        return () => {
+            try {
+                entity.removeOnSave?.(handler);
+            } catch {
+                // The form is being closed.
+            }
+        };
+    }
+
+    /**
+     * Whether the app has "Async save handler" on (app setting AsyncOnSave, in the app's settings under Features). A save
+     * then waits for the promises its OnSave handlers return, and a handler can't see another one cancel it: each sees
+     * only its own preventDefault (measured live, 2026-11-06). The page reads the setting once; this is what it uses.
+     */
+    public waitsForSaveHandlers(): boolean {
+        try {
+            const context = (window as unknown as { Xrm?: { Utility?: { getGlobalContext?(): { getCurrentAppSetting?(name: string): unknown } } } }).Xrm?.Utility?.getGlobalContext?.();
+            return context?.getCurrentAppSetting?.("AsyncOnSave") === true;
+        } catch {
+            return false;
+        }
+    }
+
     public dispose(): void {
         this.unwatchSubgrids();
         this.removePostSave();
+        this.unfollowSaves();
     }
 }

@@ -331,7 +331,14 @@ namespace NToNMultiSelect.NamesCopy
             {
                 // Deletes of every other table end here, without a service call once the forms and routes are read.
                 if (!ReadRoutes(context, service).TryGetValue(target.LogicalName, out var routes)) return;
-                Deadline(context);
+                // The first delete of an operation starts its time here. A later one (a cascade) whose time is up reads
+                // nothing: step 2 would rewrite none of the records it read (safety review P1).
+                if (Clock() > Deadline(context))
+                {
+                    tracing.Trace("{0} {1}: the time for the copies of this delete ran out; the records linked to it keep its name until their links next change.",
+                        target.LogicalName, target.Id);
+                    return;
+                }
                 foreach (var route in routes)
                 {
                     var plan = CopyPlanOf(context, service, tracing, route.SchemaName, route.Host);
@@ -349,7 +356,7 @@ namespace NToNMultiSelect.NamesCopy
                     // A record linked to itself (a self-referencing relationship) is deleted with its copy.
                     hosts.RemoveAll(id => plan.Table == target.LogicalName && id == target.Id);
                     if (hosts.Count == 0) continue;
-                    notes.Add(string.Join("|", route.SchemaName, plan.Table, string.Join(",", route.Host.Columns), string.Join(",", hosts)));
+                    notes.Add(string.Join("|", route.SchemaName, plan.Table, route.Host.Key, string.Join(",", hosts)));
                 }
             }
             catch (InvalidPluginExecutionException error) when (!context.IsInTransaction)
@@ -383,7 +390,7 @@ namespace NToNMultiSelect.NamesCopy
             var work = new List<KeyValuePair<CopyPlan, Guid>>();
             foreach (var note in noted.Split(';').Select(n => n.Split('|')).Where(n => n.Length == 4))
             {
-                var plan = CopyPlanOf(context, service, tracing, note[0], new Host(note[1], note[2].Split(',')));
+                var plan = CopyPlanOf(context, service, tracing, note[0], Host.FromKey(note[1], note[2]));
                 if (plan == null) continue;
                 foreach (var id in note[3].Split(',').Select(Guid.Parse).Where(id => !BeingDeleted(context, plan.Table, id)))
                 {
@@ -443,6 +450,20 @@ namespace NToNMultiSelect.NamesCopy
         }
 
         /// <summary>
+        /// The deadline a delete or rename of the current operation has already started (see Deadline), or null. Unlike
+        /// Deadline it starts none, and it leaves out a Deadlines entry that Deadline would drop.
+        /// </summary>
+        private static DateTime? StartedDeadline(IPluginExecutionContext context)
+        {
+            for (var c = context; c != null; c = c.ParentContext)
+            {
+                if (c.SharedVariables.TryGetValue(DeadlineKey, out object value) && value is long ticks) return new DateTime(ticks, DateTimeKind.Utc);
+            }
+            if (context.CorrelationId != Guid.Empty && Deadlines.TryGetValue(context.CorrelationId, out var deadline) && deadline >= Clock() - CacheTime) return deadline;
+            return null;
+        }
+
+        /// <summary>
         /// Renaming a linked record changes none of its links, so the host records linked to it would keep its old
         /// name: a step on Update (synchronous, PreOperation) rebuilds them with the new one. PreOperation, so that the
         /// old name can still be read: an update that doesn't set the name, or sets the one it already has (an import
@@ -475,6 +496,15 @@ namespace NToNMultiSelect.NamesCopy
                 var saved = ReadOther(service.Value, plans[0], target.Id);
                 // Compared as the copies show them: no name and a blank one are both "(No name)".
                 if (saved == null || new LinkedName(rename.Id, saved.GetAttributeValue<string>(plans[0].OtherName)).Name == rename.Name) return;
+                // A rename within an operation whose time is already up reads no linked records: none would be rewritten
+                // (safety review P1). The time isn't started here, so that the first rename's reads still don't count.
+                var started = StartedDeadline(context);
+                if (started != null && Clock() > started.Value)
+                {
+                    tracing.Trace("{0} {1}: the time for the copies of this rename ran out; the records linked to it keep its old name until their links next change.",
+                        target.LogicalName, target.Id);
+                    return;
+                }
                 foreach (var plan in plans)
                 {
                     foreach (var id in ReadHosts(service.Value, tracing, plan, target.ToEntityReference()).Where(id => !BeingDeleted(context, plan.Table, id)))
@@ -524,7 +554,7 @@ namespace NToNMultiSelect.NamesCopy
         private static void CopyIntoTarget(IOrganizationService service, CopyPlan plan, Entity target, LinkedName rename)
         {
             var links = ReadLinks(service, plan, target.Id, rename);
-            foreach (var column in plan.Columns) target[column.Name] = NamesCopyHelpers.NamesText(links, column.MaxLength);
+            foreach (var column in plan.Columns) target[column.Name] = NamesCopyHelpers.NamesText(links, column.MaxLength, column.Separator);
         }
 
         /// <summary>
@@ -550,12 +580,12 @@ namespace NToNMultiSelect.NamesCopy
             try
             {
                 plan = FromCache(Plans,
-                    $"{context.OrganizationId}|{relationshipName.ToLowerInvariant()}|{host.Table}|{string.Join(",", host.Columns)}",
-                    () => LoadPlan(service.Value, relationshipName, host.Table, host.Columns),
+                    $"{context.OrganizationId}|{relationshipName.ToLowerInvariant()}|{host.Table}|{host.Key}",
+                    () => LoadPlan(service.Value, relationshipName, host.Table, host.Columns, host.Separators),
                     // A relationship can't change, only be deleted, and neither can whether Dataverse answers
                     // RetrievePrincipalAccess for a table: only the definitions of the tables and columns are read
                     // again. A setting that can't work for its relationship or tables stays as it is.
-                    known => known.OtherTable == null ? known : WithTables(service.Value, known, relationshipName, host.Columns, () => known.PrincipalAccess));
+                    known => known.OtherTable == null ? known : WithTables(service.Value, known, relationshipName, host.Columns, host.Separators, () => known.PrincipalAccess));
             }
             catch (Exception error)
             {
@@ -710,16 +740,34 @@ namespace NToNMultiSelect.NamesCopy
         /// <summary>The host columns of one table that copy the names of a relationship.</summary>
         private sealed class Host
         {
-            public Host(string table, string[] columns)
+            public Host(string table, string[] columns, string[] separators)
             {
                 Table = table;
                 Columns = columns;
+                Separators = separators;
             }
 
             public string Table { get; }
 
             /// <summary>Logical names, in ordinal order.</summary>
             public string[] Columns { get; }
+
+            /// <summary>The separator of the names of each column, in the order of Columns.</summary>
+            public string[] Separators { get; }
+
+            /// <summary>
+            /// The columns and their separators, as the plan cache and the notes between two stages of a delete keep them:
+            /// a column whose names are joined with a comma ends with "!", which no logical name has.
+            /// </summary>
+            public string Key => string.Join(",", Columns.Select((column, i) => Separators[i] == NamesCopyHelpers.CommaSeparator ? column + "!" : column));
+
+            /// <summary>The host that `key` (see Key) describes, for `table`.</summary>
+            public static Host FromKey(string table, string key)
+            {
+                var columns = key.Split(',');
+                return new Host(table, columns.Select(column => column.TrimEnd('!')).ToArray(),
+                    columns.Select(column => column.EndsWith("!", StringComparison.Ordinal) ? NamesCopyHelpers.CommaSeparator : NamesCopyHelpers.Separator).ToArray());
+            }
         }
 
         /// <summary>The copy settings of the active forms, and the forms' version they were read at (see FormsVersion).</summary>
@@ -795,31 +843,41 @@ namespace NToNMultiSelect.NamesCopy
                     Relationship = setting.RelationshipName.ToLowerInvariant(),
                     Table = form.GetAttributeValue<string>("objecttypecode"),
                     Column = setting.HostColumn,
+                    setting.Separator,
                 }))
                 .Where(setting => !string.IsNullOrEmpty(setting.Table))
                 .GroupBy(setting => setting.Relationship)
                 .ToDictionary(byRelationship => byRelationship.Key, byRelationship => byRelationship
                     .GroupBy(setting => setting.Table)
                     .OrderBy(byTable => byTable.Key, StringComparer.Ordinal)
-                    .Select(byTable => new Host(byTable.Key,
-                        byTable.Select(setting => setting.Column).Distinct().OrderBy(column => column, StringComparer.Ordinal).ToArray()))
+                    .Select(byTable =>
+                    {
+                        var byColumn = byTable.GroupBy(setting => setting.Column).OrderBy(column => column.Key, StringComparer.Ordinal).ToArray();
+                        // The comma only when every form with the field says Comma ("Names separator"); otherwise the
+                        // semicolon, as when the setting didn't exist.
+                        return new Host(byTable.Key, byColumn.Select(column => column.Key).ToArray(),
+                            byColumn.Select(column => column.All(setting => setting.Separator == NamesCopyHelpers.CommaSeparator)
+                                ? NamesCopyHelpers.CommaSeparator : NamesCopyHelpers.Separator).ToArray());
+                    })
                     .ToArray());
             return new FormSettings(hosts, version);
         }
 
-        /// <summary>A host column, its maximum length, and whether it has column security.</summary>
+        /// <summary>A host column, its maximum length, whether it has column security, and the separator of its names.</summary>
         private sealed class HostColumn
         {
-            public HostColumn(string name, int maxLength, bool secured)
+            public HostColumn(string name, int maxLength, bool secured, string separator)
             {
                 Name = name;
                 MaxLength = maxLength;
                 Secured = secured;
+                Separator = separator;
             }
 
             public string Name { get; }
             public int MaxLength { get; }
             public bool Secured { get; }
+            public string Separator { get; }
         }
 
         /// <summary>
@@ -852,7 +910,7 @@ namespace NToNMultiSelect.NamesCopy
             return new CopyPlan { Table = table, Problems = new[] { problem } };
         }
 
-        private static CopyPlan LoadPlan(IOrganizationService service, string relationshipName, string table, string[] columns)
+        private static CopyPlan LoadPlan(IOrganizationService service, string relationshipName, string table, string[] columns, string[] separators)
         {
             var into = ColumnNames(table, columns);
             var relationship = ((RetrieveRelationshipResponse)service.Execute(
@@ -875,14 +933,14 @@ namespace NToNMultiSelect.NamesCopy
                 OtherAttribute = first ? relationship.Entity2IntersectAttribute : relationship.Entity1IntersectAttribute,
                 OtherTable = first ? relationship.Entity2LogicalName : relationship.Entity1LogicalName,
             };
-            return WithTables(service, links, relationshipName, columns, () => SupportsPrincipalAccess(service, table));
+            return WithTables(service, links, relationshipName, columns, separators, () => SupportsPrincipalAccess(service, table));
         }
 
         /// <summary>
         /// The plan of `links` (the host table and what the relationship links) with what the definitions of its tables
         /// and host columns say now, from one metadata query. `principalAccess` is asked last, once both tables are found.
         /// </summary>
-        private static CopyPlan WithTables(IOrganizationService service, CopyPlan links, string relationshipName, string[] columns, Func<bool> principalAccess)
+        private static CopyPlan WithTables(IOrganizationService service, CopyPlan links, string relationshipName, string[] columns, string[] separators, Func<bool> principalAccess)
         {
             var table = links.Table;
             var into = ColumnNames(table, columns);
@@ -903,13 +961,16 @@ namespace NToNMultiSelect.NamesCopy
                 var attribute = host.Attributes?.FirstOrDefault(a => a.LogicalName == column);
                 var maxLength = (attribute as StringAttributeMetadata)?.MaxLength ?? (attribute as MemoAttributeMetadata)?.MaxLength;
                 if (attribute == null) problems.Add($"{table}.{column} doesn't exist: nothing is copied into it.");
+                // The record's own name: each link would replace it, and the plug-in's own write of it would run the Update
+                // step of a linked table (filtered on that name), one rename after another (safety review P7).
+                else if (column == host.PrimaryNameAttribute) problems.Add($"{table}.{column} is the table's primary name column: nothing is copied into it.");
                 else if (!(attribute is StringAttributeMetadata) && !(attribute is MemoAttributeMetadata)) problems.Add($"{table}.{column} is not a text column: nothing is copied into it.");
                 // Its Update would fail and roll every link of the relationship back. SourceType 0 is a simple column;
                 // above 0 (calculated, rollup, formula) Dataverse computes the value itself.
                 else if (attribute.SourceType > 0) problems.Add($"{table}.{column} is a calculated, rollup or formula column: nothing is copied into it.");
                 else if (attribute.IsValidForUpdate == false) problems.Add($"{table}.{column} can't be updated: nothing is copied into it.");
                 else if (maxLength == null) problems.Add($"{table}.{column} has no maximum length: nothing is copied into it.");
-                else copies.Add(new HostColumn(column, maxLength.Value, attribute.IsSecured == true));
+                else copies.Add(new HostColumn(column, maxLength.Value, attribute.IsSecured == true, separators[Array.IndexOf(columns, column)]));
             }
 
             return new CopyPlan
@@ -1042,7 +1103,7 @@ namespace NToNMultiSelect.NamesCopy
             var update = new Entity(plan.Table, id);
             foreach (var column in plan.Columns)
             {
-                var text = NamesCopyHelpers.NamesText(links, column.MaxLength);
+                var text = NamesCopyHelpers.NamesText(links, column.MaxLength, column.Separator);
                 if (all || record.GetAttributeValue<string>(column.Name) != text) update[column.Name] = text;
             }
             return update.Attributes.Count == 0 ? null : update;

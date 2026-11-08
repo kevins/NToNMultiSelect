@@ -2,6 +2,11 @@
 export interface Item {
     id: string;
     name: string;
+    /**
+     * "Columns under each option": the values of those columns, as the list shows them on a second line under the name
+     * ("Water leak · In progress"). Only rows of the list have them, and only when a value is there to show.
+     */
+    details?: string;
 }
 
 /** Everything the control needs to know about the N:N relationship, discovered from metadata. */
@@ -9,6 +14,8 @@ export interface RelationshipInfo {
     schemaName: string;
     currentEntity: string;
     currentEntitySet: string;
+    /** The current table's primary name column (the record's own name), or null when it has none. */
+    currentNameAttribute?: string | null;
     targetEntity: string;
     targetEntitySet: string;
     targetIdAttribute: string;

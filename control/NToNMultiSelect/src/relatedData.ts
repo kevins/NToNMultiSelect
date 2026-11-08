@@ -1,6 +1,7 @@
 import { CollectionPage, DataverseClient, isAlreadyAssociated, isNotFound, odataString } from "./dataverse";
-import { FetchCondition, QueryConfigError, buildListFetch, firstPageFetch, nextPageFetch, readFetchSetting } from "./fetchQuery";
-import { resolveView } from "./metadata";
+import { FetchCondition, FetchTerm, QueryConfigError, buildListFetch, firstPageFetch, nextPageFetch, readFetchSetting } from "./fetchQuery";
+import { ListColumn, ListColumnSource, resolveListColumns, resolveView } from "./metadata";
+import { cutText, oneLine } from "./text";
 import { Item, RelationshipInfo, normalizeId } from "./types";
 
 /** When the whole target table has at most this many selectable rows, it is loaded once and filtered locally. */
@@ -13,6 +14,14 @@ export const SERVER_PAGE_SIZE = 100;
  * only on a page that is not the last.
  */
 const FETCH_ANNOTATIONS = 'odata.include-annotations="Microsoft.Dynamics.CRM.fetchxmlpagingcookie,Microsoft.Dynamics.CRM.morerecords"';
+/** The text Dataverse shows for a value (a choice's label, a lookup's name, a date in the user's format). */
+const FORMATTED_VALUE = "OData.Community.Display.V1.FormattedValue";
+/** FETCH_ANNOTATIONS with the formatted values, for a list with columns under each option. */
+const FETCH_ANNOTATIONS_FORMATTED = `odata.include-annotations="Microsoft.Dynamics.CRM.fetchxmlpagingcookie,Microsoft.Dynamics.CRM.morerecords,${FORMATTED_VALUE}"`;
+const FORMATTED_ANNOTATIONS = `odata.include-annotations="${FORMATTED_VALUE}"`;
+/** The values under each option are joined with this on their line. */
+export const DETAILS_SEPARATOR = " \u00b7 ";
+const NO_COLUMNS: ListColumn[] = [];
 const FETCH_PARAMETER = "?fetchXml=";
 /** FetchXML travels in the URL, and Dataverse turns away GET requests with much longer URLs. */
 const MAX_URL_LENGTH = 30_000;
@@ -26,6 +35,8 @@ interface FetchResult {
 export interface OptionsPage {
     items: Item[];
     nextLink: string | null;
+    /** "Columns under each option" found columns to show; left out without any (the list then looks as with None). */
+    hasColumns?: boolean;
 }
 
 /** The host column of a record as saved, the version the record had then (its ETag), and the records linked to it. */
@@ -46,6 +57,18 @@ export interface OptionsQuery {
     searchMode: "startswith" | "contains";
     /** Record to leave out of the list (the current record, in a self-referencing relationship). */
     excludeId: string | null;
+    /** "Columns under each option" and "Search the columns under each option"; without it, the name only. */
+    columns?: ListColumnsSetting;
+}
+
+/** The settings for the columns shown under each name in the list. */
+export interface ListColumnsSetting {
+    /** None (the name only), the columns typed in "Columns to show", or the view's columns. */
+    source: ListColumnSource;
+    /** The logical names typed in "Columns to show". */
+    names: string[];
+    /** A search also matches the columns: their text as shown when the list is filtered locally, text columns on the server. */
+    search: boolean;
 }
 
 /**
@@ -75,7 +98,7 @@ export function escapeLikeWildcards(term: string): string {
 export class RelatedData {
     constructor(
         private readonly client: DataverseClient,
-        private readonly rel: RelationshipInfo,
+        public readonly rel: RelationshipInfo,
         private readonly noName = "(No name)",
     ) {}
 
@@ -95,70 +118,93 @@ export class RelatedData {
      * so callers pass the same `pageSize` together with the `nextLink` they got.
      */
     public async loadOptions(query: OptionsQuery, searchTerm: string, pageSize: number, nextLink: string | null, signal?: AbortSignal): Promise<OptionsPage> {
-        if (query.view.trim() || query.fetchXml.trim()) {
-            return this.loadFetchOptions(query, searchTerm, pageSize, nextLink, signal);
+        let columns = NO_COLUMNS;
+        if (query.columns && query.columns.source !== "none") {
+            // The list's view is read meanwhile (the request listFetch then waits for), not after the columns.
+            const view = query.view.trim();
+            if (view && !nextLink) void resolveView(this.client, this.rel.targetEntity, view, query.columns.source === "view").catch(() => undefined);
+            columns = await resolveListColumns(this.client, this.rel, query.columns.source, query.columns.names, query.view);
         }
-        const page: CollectionPage<Record<string, unknown>> = await this.client.getPage<Record<string, unknown>>(nextLink ?? this.optionsPath(query, searchTerm), {
+        if (query.view.trim() || query.fetchXml.trim()) {
+            return this.loadFetchOptions(query, columns, searchTerm, pageSize, nextLink, signal);
+        }
+        const page: CollectionPage<Record<string, unknown>> = await this.client.getPage<Record<string, unknown>>(nextLink ?? this.optionsPath(query, searchTerm, columns), {
             maxPageSize: pageSize,
+            ...(columns.some((c) => c.formatted) ? { prefer: [FORMATTED_ANNOTATIONS] } : {}),
             signal,
         });
-        const items = page.value.map((row) => this.toItem(row)).filter((item) => item.id !== query.excludeId);
-        return { items, nextLink: page.nextLink };
+        const items = page.value.map((row) => this.toItem(row, columns)).filter((item) => item.id !== query.excludeId);
+        return { items, nextLink: page.nextLink, ...(columns.length > 0 ? { hasColumns: true } : {}) };
     }
 
     /**
      * loadOptions for a list that comes from a view or FetchXML. FetchXML pages by the query's count rather than by
      * odata.maxpagesize, and the next link is the request for the following page, paging cookie included.
      */
-    private async loadFetchOptions(query: OptionsQuery, searchTerm: string, pageSize: number, nextLink: string | null, signal?: AbortSignal): Promise<OptionsPage> {
-        const path = nextLink ?? this.fetchPath(firstPageFetch(await this.listFetch(query), pageSize, this.fetchConditions(query, searchTerm)));
-        const body = await this.client.get<FetchResult>(path, { prefer: [FETCH_ANNOTATIONS], signal });
+    private async loadFetchOptions(query: OptionsQuery, columns: ListColumn[], searchTerm: string, pageSize: number, nextLink: string | null, signal?: AbortSignal): Promise<OptionsPage> {
+        const path = nextLink ?? this.fetchPath(firstPageFetch(await this.listFetch(query, columns), pageSize, this.fetchConditions(query, searchTerm, columns)));
+        const body = await this.client.get<FetchResult>(path, { prefer: [columns.some((c) => c.formatted) ? FETCH_ANNOTATIONS_FORMATTED : FETCH_ANNOTATIONS], signal });
         const rows = body.value ?? [];
         // Each record once, even if a query with links ever returned one twice: the list is keyed by id.
         const seen = new Set<string>();
         const items: Item[] = [];
         for (const row of rows) {
-            const item = this.toItem(row);
+            const item = this.toItem(row, columns);
             if (item.id === query.excludeId || seen.has(item.id)) continue;
             seen.add(item.id);
             items.push(item);
         }
+        // Only when there are columns: without them the page is as it always was.
+        const found = columns.length > 0 ? { hasColumns: true } : {};
         // Without the annotation this is the last page, even when it is full.
         if (body["@Microsoft.Dynamics.CRM.morerecords"] !== true) {
-            return { items, nextLink: null };
+            return { items, nextLink: null, ...found };
         }
         const xml = decodeURIComponent(path.slice(path.indexOf(FETCH_PARAMETER) + FETCH_PARAMETER.length));
         try {
-            return { items, nextLink: this.fetchPath(nextPageFetch(xml, body["@Microsoft.Dynamics.CRM.fetchxmlpagingcookie"])) };
+            return { items, nextLink: this.fetchPath(nextPageFetch(xml, body["@Microsoft.Dynamics.CRM.fetchxmlpagingcookie"])), ...found };
         } catch (error) {
             // The cookie holds the sorted values of the last record, so a long one can make the address too long:
             // the page number alone then does.
             if (!(error instanceof QueryConfigError && error.problem.kind === "tooLong")) throw error;
-            return { items, nextLink: this.fetchPath(nextPageFetch(xml, undefined)) };
+            return { items, nextLink: this.fetchPath(nextPageFetch(xml, undefined)), ...found };
         }
     }
 
     /** The list's FetchXML before paging and search. A view's query is looked up once per page load. */
-    private async listFetch(query: OptionsQuery): Promise<string> {
+    private async listFetch(query: OptionsQuery, columns: ListColumn[] = NO_COLUMNS): Promise<string> {
         const setting = readFetchSetting(query);
         const view = query.view.trim();
-        const viewFetchXml = view ? await resolveView(this.client, this.rel.targetEntity, view) : null;
-        return buildListFetch(this.rel, setting, viewFetchXml, query.showInactive);
+        // (The same request as the columns of the view, when the list shows them: see resolveViewRow.)
+        const viewFetchXml = view ? await resolveView(this.client, this.rel.targetEntity, view, query.columns?.source === "view") : null;
+        return buildListFetch(this.rel, setting, viewFetchXml, query.showInactive, columns.map((c) => c.name));
     }
 
     /** The search and the record to leave out, as FetchXML conditions (the same rules as optionsPath). */
-    private fetchConditions(query: OptionsQuery, searchTerm: string): FetchCondition[] {
-        const { targetIdAttribute, targetNameAttribute } = this.rel;
-        const conditions: FetchCondition[] = [];
+    private fetchConditions(query: OptionsQuery, searchTerm: string, columns: ListColumn[] = NO_COLUMNS): FetchTerm[] {
+        const { targetIdAttribute } = this.rel;
+        const conditions: FetchTerm[] = [];
         if (query.excludeId) {
             conditions.push({ attribute: targetIdAttribute, operator: "ne", value: query.excludeId });
         }
         const term = searchTerm.trim();
         if (term) {
             const pattern = escapeLikeWildcards(term);
-            conditions.push({ attribute: targetNameAttribute, operator: "like", value: query.searchMode === "contains" ? `%${pattern}%` : `${pattern}%` });
+            const value = query.searchMode === "contains" ? `%${pattern}%` : `${pattern}%`;
+            const matches: FetchCondition[] = this.searchedColumns(query, columns).map((attribute) => ({ attribute, operator: "like", value }));
+            conditions.push(matches.length > 1 ? { anyOf: matches } : matches[0]);
         }
         return conditions;
+    }
+
+    /**
+     * The columns a search on the server matches: the name, and with "Search the columns under each option" the text
+     * columns among them (a choice, a number or a lookup can't be matched with startswith or contains).
+     */
+    private searchedColumns(query: OptionsQuery, columns: ListColumn[]): string[] {
+        const searched = [this.rel.targetNameAttribute];
+        if (query.columns?.search) searched.push(...columns.filter((c) => c.text).map((c) => c.name));
+        return searched;
     }
 
     private fetchPath(xml: string): string {
@@ -169,18 +215,19 @@ export class RelatedData {
         return path;
     }
 
-    public optionsPath(query: OptionsQuery, searchTerm: string): string {
+    public optionsPath(query: OptionsQuery, searchTerm: string, columns: ListColumn[] = NO_COLUMNS): string {
         const { targetEntitySet, targetIdAttribute, targetNameAttribute } = this.rel;
-        const filters = this.optionsFilters(query, searchTerm);
-        let path = `${targetEntitySet}?$select=${targetIdAttribute},${targetNameAttribute}&$orderby=${targetNameAttribute} asc,${targetIdAttribute} asc`;
+        const filters = this.optionsFilters(query, searchTerm, columns);
+        const select = [targetIdAttribute, targetNameAttribute, ...columns.map((c) => c.property)].join(",");
+        let path = `${targetEntitySet}?$select=${select}&$orderby=${targetNameAttribute} asc,${targetIdAttribute} asc`;
         if (filters.length) {
             path += `&$filter=${encodeURIComponent(filters.join(" and "))}`;
         }
         return path;
     }
 
-    private optionsFilters(query: OptionsQuery, searchTerm: string): string[] {
-        const { targetIdAttribute, targetNameAttribute, activeFilter } = this.rel;
+    private optionsFilters(query: OptionsQuery, searchTerm: string, columns: ListColumn[] = NO_COLUMNS): string[] {
+        const { targetIdAttribute, activeFilter } = this.rel;
         const filters: string[] = [];
         if (activeFilter && !query.showInactive) {
             filters.push(activeFilter);
@@ -194,7 +241,9 @@ export class RelatedData {
         }
         const term = searchTerm.trim();
         if (term) {
-            filters.push(`${query.searchMode}(${targetNameAttribute},${odataString(escapeLikeWildcards(term))})`);
+            const pattern = odataString(escapeLikeWildcards(term));
+            const matches = this.searchedColumns(query, columns).map((attribute) => `${query.searchMode}(${attribute},${pattern})`);
+            filters.push(matches.length > 1 ? `(${matches.join(" or ")})` : matches[0]);
         }
         return filters;
     }
@@ -219,9 +268,15 @@ export class RelatedData {
     public async associate(recordId: string, targetId: string, tag?: string): Promise<void> {
         const { currentEntitySet, navigationProperty, targetEntitySet } = this.rel;
         try {
-            await this.client.send("POST", `${currentEntitySet}(${recordId})/${navigationProperty}/$ref${tagQuery(tag)}`, {
-                "@odata.id": `${this.client.apiUrl}/${targetEntitySet}(${targetId})`,
-            });
+            // With keepalive: once on its way, the browser finishes it even if the user closes the page meanwhile (a save
+            // with "Save the selection" = With the record writes its links right after the record, as the user leaves).
+            await this.client.send(
+                "POST",
+                `${currentEntitySet}(${recordId})/${navigationProperty}/$ref${tagQuery(tag)}`,
+                { "@odata.id": `${this.client.apiUrl}/${targetEntitySet}(${targetId})` },
+                {},
+                { keepalive: true },
+            );
         } catch (error) {
             // Only accept a "duplicate" error when the link really exists; a plugin could use similar wording for a
             // real failure, and the UI must never show a link that was not saved.
@@ -249,7 +304,7 @@ export class RelatedData {
     public async disassociate(recordId: string, targetId: string, tag?: string): Promise<void> {
         const { currentEntitySet, navigationProperty } = this.rel;
         try {
-            await this.client.send("DELETE", `${currentEntitySet}(${recordId})/${navigationProperty}(${targetId})/$ref${tagQuery(tag)}`);
+            await this.client.send("DELETE", `${currentEntitySet}(${recordId})/${navigationProperty}(${targetId})/$ref${tagQuery(tag)}`, undefined, {}, { keepalive: true });
         } catch (error) {
             if (!isNotFound(error)) {
                 throw error;
@@ -288,13 +343,39 @@ export class RelatedData {
         await this.client.send("PATCH", `${this.rel.currentEntitySet}(${recordId})`, { [column]: value }, { "If-Match": version }, { keepalive: true });
     }
 
-    private toItem(row: Record<string, unknown>): Item {
+    private toItem(row: Record<string, unknown>, columns: ListColumn[] = NO_COLUMNS): Item {
         const id = normalizeId(row[this.rel.targetIdAttribute] as string);
         const rawName = row[this.rel.targetNameAttribute];
         const name = typeof rawName === "string" && rawName.trim() ? rawName : this.noName;
-        return { id, name };
+        if (!columns.length) return { id, name };
+        const details = columns
+            .map((column) => columnText(row, column))
+            .filter(Boolean)
+            .join(DETAILS_SEPARATOR);
+        return details ? { id, name, details } : { id, name };
     }
 }
+
+/**
+ * A column's value as the list shows it under the name: the formatted value for a choice, a yes/no, a number, a date
+ * or a lookup (as Dataverse shows it to the user), the text itself otherwise, on one line. "" when it's empty, and for
+ * a lookup to a record that has no name: its id would mean nothing to the user. (Rich text isn't shown, see
+ * listColumn in metadata.ts.)
+ */
+function columnText(row: Record<string, unknown>, column: ListColumn): string {
+    const formatted = column.formatted ? row[`${column.property}@${FORMATTED_VALUE}`] : undefined;
+    if (typeof formatted === "string") return oneLine(formatted, MAX_COLUMN_TEXT);
+    if (column.property !== column.name) return "";
+    const value = row[column.property];
+    if (value === null || value === undefined) return "";
+    // A long text only shows its start: the rest isn't read or kept for every row of the list.
+    return oneLine(cutText(String(value), MAX_COLUMN_SOURCE), MAX_COLUMN_TEXT);
+}
+
+/** The most of a plain text read for its line. */
+const MAX_COLUMN_SOURCE = 20_000;
+/** The most of a column's text kept for its line: far more than the line shows. */
+const MAX_COLUMN_TEXT = 300;
 
 /**
  * A search made only of spaces, hyphens or apostrophes ("-", "'") becomes a pattern like '-%', which SQL can't

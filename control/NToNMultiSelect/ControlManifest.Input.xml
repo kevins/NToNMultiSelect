@@ -11,7 +11,7 @@
   below avoid them (scripts/build.mjs checks this before packaging).
 -->
 <manifest>
-  <control namespace="KV" constructor="NToNMultiSelect" version="1.0.1" display-name-key="N:N Multi-Select" description-key="Edits a many-to-many (N:N) relationship with a control that looks and behaves like the native multi-select choice field. Each selection is saved immediately, and related subgrids on the form refresh automatically." control-type="standard">
+  <control namespace="KV" constructor="NToNMultiSelect" version="1.1.0" display-name-key="N:N Multi-Select" description-key="Edits a many-to-many (N:N) relationship with a control that looks and behaves like the native multi-select choice field. Each selection is saved immediately or with the record (see Save the selection), and related subgrids on the form refresh automatically." control-type="standard">
     <external-service-usage enabled="false">
     </external-service-usage>
 
@@ -21,13 +21,13 @@
       <type>Multiple</type>
     </type-group>
 
-    <property name="value" display-name-key="Host column" description-key="Any text column on the form. The control fills it on the form with the selected names, which the form never saves, so the column can be required (Business required, a business rule, or a required step of a business process flow): saving, or moving to the next stage, is then blocked until something is selected. Other copies of the column on the form become read-only. To store the selected names in this column, turn on Copy names into the host column. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column." of-type-group="text" usage="bound" required="true" />
+    <property name="value" display-name-key="Host column" description-key="Any text column on the form. The control fills it on the form with the selected names, which the form never saves (except with Save the selection = With the record and Copy names into the host column = Yes, see there), so the column can be required (Business required, a business rule, or a required step of a business process flow): saving, or moving to the next stage, is then blocked until something is selected. Other copies of the column on the form become read-only. To store the selected names in this column, turn on Copy names into the host column. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column." of-type-group="text" usage="bound" required="true" />
 
     <property name="relationshipName" display-name-key="N:N relationship schema name" description-key="Schema name of the many-to-many relationship to edit, for example new_project_skill. The name is not case-sensitive. The related table, its columns and the navigation properties are looked up automatically." of-type="SingleLine.Text" usage="input" required="true" />
 
     <property name="filter" display-name-key="Extra OData filter (optional)" description-key="OData filter that limits the records that can be selected, for example new_category eq 2. It is applied in addition to the active-records filter. It cannot be combined with Records from view or FetchXML filter; in that case, add the condition to the FetchXML filter instead." of-type="SingleLine.Text" usage="input" required="false" />
 
-    <property name="view" display-name-key="Records from view (optional)" description-key="Name or ID of a system view of the related table, for example Active Skills. Only records returned by the view can be selected, in the sort order of the view (by name when the view has none). The filters of the view are used, including filters on related tables; its columns are ignored. In an environment with more than one language, enter the view ID, because translated view names differ between languages. When a view is set, Show inactive records is ignored." of-type="SingleLine.Text" usage="input" required="false" />
+    <property name="view" display-name-key="Records from view (optional)" description-key="Name or ID of a system view of the related table, for example Active Skills. Only records returned by the view can be selected, in the sort order of the view (by name when the view has none). The filters of the view are used, including filters on related tables; its columns are only used when Columns under each option is Columns of the view. In an environment with more than one language, enter the view ID, because translated view names differ between languages. When a view is set, Show inactive records is ignored." of-type="SingleLine.Text" usage="input" required="false" />
 
     <property name="fetchXml" display-name-key="FetchXML filter (optional)" description-key="Either one or more filter and link-entity elements, which are added to the query with AND (together with the view, when one is set), or a complete FetchXML query (a fetch element) for the related table. A complete query cannot be combined with a view; its filters and sort order are used (by name when it has none) and its columns are ignored. Filter and link-entity elements only narrow the list and never change its order. Show inactive records is ignored when a complete query is used." of-type="Multiple" usage="input" required="false" />
 
@@ -59,9 +59,22 @@
       <value name="Yes" display-name-key="Yes">1</value>
     </property>
 
+    <property name="namesSeparator" display-name-key="Names separator" description-key="How the names are joined in the host column: the names the field keeps there on the form, and those Copy names into the host column writes. Semicolon (default): API design; Automation. Comma: API design, Automation. Choose Comma only when no name contains a comma: such a name could no longer be told apart from two names. Use the same value on every form that has this field, and for each copy of it on a form: where they do not agree, the semicolon is used (by the names copy plug-in, which reads the published forms, and by copies of the field open together; the copies with Copy names decide). Records already saved keep their text until their selection changes." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="Semicolon" display-name-key="Semicolon (A; B)">0</value>
+      <value name="Comma" display-name-key="Comma (A, B)">1</value>
+    </property>
+
     <property name="formSelection" display-name-key="Selection on the form" description-key="What the form is told about the selection, through the host column. No (default): the host column on the form shows the names of the saved selected values (on a new record, the picks waiting for the first save), for scripts and the required check; the form never saves them and no event runs. Event: the same, and the OnChange event of the host column runs after each change of the selection once it is saved (a removal once it has gone through, the removal of the last value of a required field at once; on a new record, at each change before the first save), so that scripts and business rules on the column can react. The names shown when the form opens never count as a change." of-type="Enum" usage="input" required="false" default-value="0">
       <value name="No" display-name-key="No">0</value>
       <value name="Event" display-name-key="Event">1</value>
+    </property>
+    <property name="saveMode" display-name-key="Save the selection" description-key="When picks and removals are saved. At once (default): each change is saved as soon as it is made. With the record: changes stay on the form, which shows them as unsaved changes, and they are saved with the record (Save, Save and Close, auto-save): with Copy names into the host column = Yes, the record is saved with the names in the host column, then the links are written; leaving the record without saving drops them, and so does a refresh of the form that drops its unsaved changes. See Write the links. Changes are still saved at once in a dialog, a side pane or quick create, on appointment forms, and when the field is on the form twice." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="AtOnce" display-name-key="At once">0</value>
+      <value name="WithRecord" display-name-key="With the record">1</value>
+    </property>
+    <property name="linkTiming" display-name-key="Write the links" description-key="Used when Save the selection is With the record. After the record is saved (default): the record is saved first, then the links are written; a link the server refuses shows in the field. Before the record is saved, for the Save, Save and Close and Save and New of the user: the links are written first, and the record is saved only when they all succeed; a refused link cancels the save, and the links already written stay; a save that a form script cancels writes no link. To write the links first, the control cancels the save while they are written and then saves the record again, so the OnSave scripts of the form run twice: a script that creates a record or calls a service when the record is saved does it twice. Other saves (the auto-save, leaving the record, a command such as Deactivate, a save started by a script) go ahead, with their links after them, as with After. So do all saves in an app with Async save handler turned on (in the app settings, under Features), where the control cannot see a form script cancel the save: there, when the selection is the only change, a save that a script cancels still writes its links. A new record is always saved first, since its links need it." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="After" display-name-key="After the record is saved">0</value>
+      <value name="Before" display-name-key="Before the record is saved">1</value>
     </property>
 
 
@@ -70,9 +83,27 @@
       <value name="Contains" display-name-key="Contains">1</value>
     </property>
 
+    <property name="listColumns" display-name-key="Columns under each option" description-key="None (default): each option in the list shows its name only, like the native multi-select choice. Columns to show: the columns entered in Columns to show appear on a second, smaller line under each name, as in a lookup. Columns of the view: the first three columns of the view in Records from view, or of the default lookup view of the related table when no view is set, in the order of the view. Choices, yes/no, numbers, dates and lookups show the text Dataverse shows for them. Rich text columns cannot be shown. A multiple lines of text column is read in full for every record listed, so a long one makes the list slower to load. The selected values keep showing their names only." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="None" display-name-key="None">0</value>
+      <value name="Typed" display-name-key="Columns to show">1</value>
+      <value name="View" display-name-key="Columns of the view">2</value>
+    </property>
+
+    <property name="listColumnNames" display-name-key="Columns to show (optional)" description-key="Used when Columns under each option is Columns to show. Logical names of up to three columns of the related table, separated by commas and shown in this order, for example new_title, statuscode, new_requestedby. Any more are ignored. Text (but not rich text), choice, yes/no, number, date and lookup columns can be shown." of-type="SingleLine.Text" usage="input" required="false" />
+
+    <property name="searchListColumns" display-name-key="Search the columns under each option" description-key="No (default): typing in the box searches the names only. Yes: typing also searches the columns under each option. Lists of up to 500 records match the text of every column as shown. When the related table has more than 500 records and searching runs on the server, only text columns (single line and multiple lines of text) are searched, but not columns with column security, as set in Search mode for large tables, which makes searches slower on very large tables." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="No" display-name-key="No">0</value>
+      <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
     <property name="openOnClick" display-name-key="Open list on click" description-key="No (default): like the native multi-select choice, clicking the box only focuses it, and the list opens from the arrow button, the Down arrow key, Enter or typing. Yes: clicking anywhere in the box opens the list." of-type="Enum" usage="input" required="false" default-value="0">
       <value name="No" display-name-key="No">0</value>
       <value name="Yes" display-name-key="Yes">1</value>
+    </property>
+
+    <property name="loadList" display-name-key="Load the list" description-key="When the form opens (default): the records that can be picked are loaded in the background as soon as the form opens, so the list opens at once. When the list is first opened: they are loaded only when someone opens the list or types in the box, so a form on which nobody picks loads none of them; the first opening then shows Loading for a moment." of-type="Enum" usage="input" required="false" default-value="0">
+      <value name="FormOpens" display-name-key="When the form opens">0</value>
+      <value name="ListOpened" display-name-key="When the list is first opened">1</value>
     </property>
 
     <property name="openRecords" display-name-key="Open selected records" description-key="No (default): like the native multi-select choice, selected values are plain text. Yes: each selected value is a link that opens the record in a new browser tab. Ctrl+click and middle-click work as for any link, Enter opens the value highlighted with the keyboard (Backspace in the empty search box, then the Left and Right arrow keys), and the links also work when the field is read-only." of-type="Enum" usage="input" required="false" default-value="0">

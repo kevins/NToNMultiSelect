@@ -11,9 +11,9 @@ The same demo as a [video on YouTube](https://www.youtube.com/watch?v=2jof2VszZj
 
 | Item | Value |
 | --- | --- |
-| Control | `KV.NToNMultiSelect`, display name *N:N Multi-Select*, version 1.0.1 |
-| Solutions | `NToNMultiSelect` (*N:N Multi-Select*): the control and the form library.<br>`NToNMultiSelectWithPlugin` (also *N:N Multi-Select*): the same, plus the names copy plug-in with its link steps (Associate and Disassociate) and the steps page.<br>Both version 1.0.1.0, each as a managed and an unmanaged package. See [Which solution](#which-solution) |
-| Plug-in (solution with the plug-in only) | Assembly `NToNMultiSelect.NamesCopy`, plug-in type `NToNMultiSelect.NamesCopy.NamesCopyPlugin` (*N:N Multi-Select names copy*), sandbox, .NET Framework 4.6.2, two steps (Associate and Disassociate), plus the Delete and Update steps that the steps page creates for your linked tables. See [Names copy plug-in](#names-copy-plug-in-optional) and [what each step costs](#time-trade-offs-what-each-step-costs) |
+| Control | `KV.NToNMultiSelect`, display name *N:N Multi-Select*, version 1.1.0 |
+| Solutions | `NToNMultiSelect` (*N:N Multi-Select*): the control and the form library.<br>`NToNMultiSelectWithPlugin` (also *N:N Multi-Select*): the same, plus the names copy plug-in with its link steps (Associate and Disassociate) and the steps page.<br>Both version 1.1.0.0, each as a managed and an unmanaged package. See [Which solution](#which-solution) |
+| Plug-in (solution with the plug-in only) | Assembly `NToNMultiSelect.NamesCopy` (version 1.0.0.0), plug-in type `NToNMultiSelect.NamesCopy.NamesCopyPlugin` (*N:N Multi-Select names copy*), sandbox, .NET Framework 4.6.2, two steps (Associate and Disassociate), plus the Delete and Update steps that the steps page creates for your linked tables. See [Names copy plug-in](#names-copy-plug-in-optional) and [what each step costs](#time-trade-offs-what-each-step-costs) |
 | Steps page (solution with the plug-in only) | HTML web resource `kv_/NToNMultiSelect/namescopysteps.html` (*N:N Multi-Select names copy: steps for your tables*), for administrators: creates the plug-in's Delete and Update steps for your linked tables only. Open it at `https://<your environment>/WebResources/kv_/NToNMultiSelect/namescopysteps.html`. See [The steps page](#the-steps-page) |
 | Publisher | `KV`, prefix `kv`, choice value prefix 72720 |
 | Form library (optional) | Web resource `kv_/NToNMultiSelect/formloader.js`, handler `KVNToNMultiSelectLoader.onLoad` |
@@ -29,7 +29,7 @@ one.
 * [Features](#features) and [screenshots](#screenshots)
 * [Download](#download)
 * [Install](#install), [which solution](#which-solution) and [add the control to a form](#add-the-control-to-a-form)
-* [Settings](#settings), including [Maximum selections](#maximum-selections), [+ New](#-new-quick-create), [Copy names into the host column](#copy-names-into-the-host-column), [a required host column](#a-required-host-column), [reading the selection in form scripts](#reading-the-selection-in-form-scripts) and [column security](#column-security-on-the-host-column)
+* [Settings](#settings), including [columns under each option](#columns-under-each-option), [loading the list](#load-the-list), [saving the selection with the record](#save-the-selection-with-the-record), [when the links are written](#write-the-links-before-or-after-the-records-save), [Maximum selections](#maximum-selections), [+ New](#-new-quick-create), [Copy names into the host column](#copy-names-into-the-host-column), [a required host column](#a-required-host-column), [reading the selection in form scripts](#reading-the-selection-in-form-scripts) and [column security](#column-security-on-the-host-column)
 * [Form library (optional)](#form-library-optional)
 * [Names copy plug-in (optional)](#names-copy-plug-in-optional), including [what each step costs](#time-trade-offs-what-each-step-costs), [the steps page](#the-steps-page) and [turning steps off](#turning-steps-off)
 * [Messages](#messages), [Upgrade](#upgrade), [Uninstall](#uninstall) and [Troubleshooting](#troubleshooting)
@@ -50,8 +50,11 @@ one.
 | After an × or "+N" | The field stays focused and one value is highlighted with a black border: the next one after an ×, the first one after "+N". The arrow keys and Delete work on it, and Enter opens it with *Open selected records*. After "+N" all values stay shown until the focus leaves the field |
 | Read-only | Grey box with the names, comma separated |
 
-* **Saved immediately.** Each pick is saved as an association straight away (unpicking removes it). The form is never
-  made dirty, so required fields elsewhere on the form do not block the change.
+* **Saved immediately, or with the record.** By default each pick is saved as an association straight away (unpicking
+  removes it). The form is never made dirty, so required fields elsewhere on the form do not block the change. With
+  *Save the selection* set to *With the record*, picks and removals wait on the form as unsaved changes and are saved
+  when the record is saved, the links right after the record or, if you choose, before it. See
+  [Save the selection](#save-the-selection-with-the-record).
 * **Can be required.** The host column can be Business Required, made required by a business rule, or a required step
   of a business process flow: the form cannot be saved, or move to the next stage, until something is selected, with
   the form's own messages. The last value cannot be taken away by removing it and leaving the record. See
@@ -62,6 +65,12 @@ one.
 * **Filtering.** The records offered can be limited with an OData filter, a system view or FetchXML.
 * **Large tables.** Up to 500 records load once and are filtered in the browser; larger tables search on the server and
   load more rows as the list scrolls.
+* **Columns under each option.** Optionally, each option can show up to three more columns of its record on a second
+  line under the name, as a lookup does: columns you type in, or those of a view. Typing can search them too. See
+  [Columns under each option](#columns-under-each-option).
+* **Load the list when it is needed.** The records that can be picked load in the background as the form opens, or,
+  with *Load the list*, only when the list is first opened, so that a form on which nobody picks loads none of them.
+  See [Load the list](#load-the-list).
 * **New records.** Picks made before the first save are linked as soon as the record is saved.
 * **Native-like editing.** Removing a value with its ×, "+N" and "less" behave like the native control: the field keeps
   the focus and highlights a value, so values can be removed one after another with the mouse or the keyboard.
@@ -104,8 +113,8 @@ multi-select choice list is shown below it for comparison.
 
 ![Typing filters the list](docs/images/search.png)
 
-**Saved straight away.** A pick is linked at once, the subgrid of the same relationship shows it, and the form stays
-saved.
+**Saved straight away** (the default). A pick is linked at once, the subgrid of the same relationship shows it, and the
+form stays saved.
 
 ![The control and the subgrid show the same links](docs/images/subgrid-sync.png)
 
@@ -127,7 +136,8 @@ the user scrolls to the end. Typing then searches on the server.
 
 ![Searching a large list on the server](docs/images/large-list-search.png)
 
-**New records.** Picks made before the first save are held and linked when the record is saved.
+**New records.** Picks made before the first save are held and linked when the record is saved. The picture is from
+version 1.0.1, which also showed a note under the field; version 1.1.0 no longer shows that note.
 
 ![A new record with a held pick](docs/images/new-record.png)
 
@@ -145,7 +155,7 @@ The solution packages are attached to each release on the [Releases](../../relea
 | `NToNMultiSelect_managed.zip` | Solution without the plug-in, managed: for test and production environments |
 | `NToNMultiSelectWithPlugin_unmanaged.zip` | Solution with the names copy plug-in, its link steps (Associate, Disassociate) and the [steps page](#the-steps-page), unmanaged: for development environments |
 | `NToNMultiSelectWithPlugin_managed.zip` | Solution with the names copy plug-in, its link steps and the steps page, managed: for test and production environments |
-| `README.txt` | Component names of the build, notes on the plug-in and on upgrading from 1.0.0, and SHA-256 checksums of the zip files |
+| `README.txt` | Component names of the build, notes on the plug-in and on upgrading, and SHA-256 checksums of the zip files |
 | `NToNMultiSelect-Technical-Reference.docx` | Installation, settings, form library, the names copy plug-in, upgrade, uninstall and troubleshooting, step by step with screenshots |
 | `NToNMultiSelect-Developer-Guide.docx` | The developer guide as a Word document: how the control, the form library and the plug-in are built and how to change them |
 
@@ -179,9 +189,10 @@ Yes; for every other link it returns at once (the time it costs then is the time
 
 **Adding the plug-in later.** Import `NToNMultiSelectWithPlugin` on top of `NToNMultiSelect` (the same kind, managed
 or unmanaged, as the solution already installed). Both solutions are then installed, both named *N:N Multi-Select*
-in the solution list (the **Name** column tells them apart), and they share the control and the form library. Dataverse keeps a component as long as any installed managed solution contains it. So deleting only the
-managed `NToNMultiSelectWithPlugin` removes the plug-in and keeps the control, and removing everything means deleting
-both (see [Uninstall](#uninstall)).
+in the solution list (the **Name** column tells them apart), and they share the control and the form library. Deleting
+only the managed `NToNMultiSelectWithPlugin` does not keep the control: Dataverse removes the control too, even with
+`NToNMultiSelect` installed, and refuses while forms use it. To stop the plug-in, turn its steps off instead (see
+[Turning steps off](#turning-steps-off)). Removing everything means deleting both (see [Uninstall](#uninstall)).
 
 ### Managed or unmanaged
 
@@ -190,7 +201,7 @@ both (see [Uninstall](#uninstall)).
 | Use for | Development environments | Test and production environments |
 | Components | Can be edited and added to other solutions | Locked; owned by this solution |
 | After import | **Publish all customizations** is required | Live immediately |
-| Uninstall | Deleting the solution removes only the container; the components stay | Deleting the solution removes its components, except those another installed managed solution still contains (for example the control and the form library, when both N:N Multi-Select solutions are installed) |
+| Uninstall | Deleting the solution removes only the container; the components stay | Deleting the solution removes its components. Deleting `NToNMultiSelectWithPlugin` removes the control too, even when `NToNMultiSelect` is installed (see [Turning steps off](#turning-steps-off) to stop only the plug-in) |
 
 Import only one kind, managed or unmanaged, into a given environment. To ship the control as part of an application
 solution instead, import the unmanaged package into the development environment and add the custom control
@@ -251,11 +262,18 @@ the unmanaged solution the page is in: nine components (see [When it runs](#when
 2. **Pick a host column.** The control is placed on a text column of the form's table: *Single line of text*,
    *Text area* or *Multiple lines of text*. A new single line of text column (for example *Project skills*) is the
    safest choice. The column may be **Business Required**: the control fills it on the form with the selected names,
-   which the form never saves, so the form can only be saved once something is selected (see
+   which the form doesn't save (unless *Save the selection* is *With the record* and *Copy names into the host column*
+   is Yes), so the form can only be saved once something is selected (see
    [A required host column](#a-required-host-column)). If *Copy names into the host column* will be turned on, give the column room
    for all the names (for example 4,000 characters, or *Multiple lines of text*); the copy is cut to the column's
-   length.
+   length. Use a column of its own for each relationship, in plain text: two relationships that copy into one column
+   replace each other's names, and a rich text column shows the names as HTML (a name with `<` or `&` in it then shows
+   differently). The table's primary name column (the record's own name) never gets the names: the control and the
+   names copy plug-in don't write them there. In an app with *Async save handler* on, a field bound to it saves its
+   changes at once.
 3. **Open the form** in the form designer and add the host column to the form if it is not already there. Select it.
+   Use a main form, not a quick create form: on a quick create form the field can only show "Save the record first,
+   then pick values here."
 
    ![The host column selected on the form](docs/images/form-1-field.png)
 
@@ -280,12 +298,20 @@ the unmanaged solution the page is in: nine components (see [When it runs](#when
 6. Open a record. If the field shows the control, the installation is complete. If it shows "Error loading control",
    add the [form library](#form-library-optional).
 
-**Security roles.** Users need Read on both tables and Append / Append To to link records, Create on the related table
-for *+ New*, and Write on the record for *Copy names into the host column*. When column security secures the host
-column, users also need Update on that column in their field security profile; without it, the control is read-only
-for them (see [Column security on the host column](#column-security-on-the-host-column)). Without the other
-privileges the control says so and names the missing privilege. The names copy plug-in needs no privileges from the
-users: it writes as the system user.
+**Security roles.** The solutions add no security role of their own: the control works with the privileges users have
+on the two tables. Users need Read on both tables and Append / Append To to link records, Create on the related table
+for *+ New*, and Write on the record for *Copy names into the host column*. With *Save the selection* set to *With the
+record*, the links go with the record's save, which the user makes and which takes Write on the record, as any save
+does. When column security secures the host column, users also need Update on that column in their field security
+profile; without it, the control is read-only for them (see
+[Column security on the host column](#column-security-on-the-host-column)). Without the other privileges the control
+says so and names the missing privilege. Columns under the options that column security keeps a user from reading show
+empty for that user. The names copy plug-in needs no privileges from the users: it writes as the system user.
+Importing the solutions takes the System Administrator role: both create a web resource (the form loader; with the
+plug-in also the steps page), and the one with the plug-in creates a plug-in assembly and its steps, none of which
+the default System Customizer role can create (for the plug-in assembly, see Microsoft's
+[Import solutions](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/import-update-export-solutions)).
+A System Customizer can then add the control to forms and set it up. The users need no administrator role.
 
 ## Settings
 
@@ -296,27 +322,38 @@ only. Leave *Bind to table column* cleared and type the value under *Static valu
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Host column | (required) | Any text column on the form. The control fills it on the form with the selected names, which the form never saves, so the column can be required (Business Required, a business rule, or a required step of a business process flow): saving, or moving to the next stage, is then blocked until something is selected. Other copies of the column on the form become read-only. To store the selected names in this column, turn on *Copy names into the host column*. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column |
+| Host column | (required) | Any text column on the form. The control fills it on the form with the selected names, which the form never saves (except with *Save the selection* = With the record and *Copy names into the host column* = Yes, see [Save the selection](#save-the-selection-with-the-record)), so the column can be required (Business Required, a business rule, or a required step of a business process flow): saving, or moving to the next stage, is then blocked until something is selected. Other copies of the column on the form become read-only. To store the selected names in this column, turn on *Copy names into the host column*. When column security secures this column, users who are not allowed to update it see the control read-only, as they would see the column |
 | N:N relationship schema name | (required) | The relationship to edit, for example `new_project_skill`. Not case-sensitive |
 | Extra OData filter | empty | Limits the records that can be selected, for example `new_category eq 2`. Cannot be combined with a view or FetchXML |
-| Records from view | empty | Name or id of a system view of the related table; only records the view returns can be selected, in the view's sort order. Use the id when view names are translated. See [Choosing which records can be selected](#choosing-which-records-can-be-selected) |
+| Records from view | empty | Name or id of a system view of the related table; only records the view returns can be selected, in the view's sort order. Its columns are used only by *Columns under each option* = Columns of the view. Use the id when view names are translated. See [Choosing which records can be selected](#choosing-which-records-can-be-selected) |
 | FetchXML filter | empty | `<filter>` and `<link-entity>` elements that narrow the list (and the view, if set), or a complete `<fetch>` query, which also sets the sort order |
 | Show inactive records | No | Also offer inactive records. Ignored with a view or a complete FetchXML query |
 | Show Select all | Yes | Shows or hides the Select all row |
 | Select all limit | 100 | Select all is offered only when the list holds at most this many records. Maximum 500; 0 means 500 |
 | Maximum selections | 0 (no limit) | The most records that can be selected with this control. At the limit, further rows are greyed out with a hint and *+ New* is hidden. A value whose removal is still being saved keeps its place until the removal has succeeded. Each copy of the field checks the limit on its own, and subgrids, imports, flows and integrations are not limited. See [Maximum selections](#maximum-selections) |
-| Search mode for large tables | Starts with | For tables with more than 500 records: *Starts with* (fast on any size) or *Contains* (matches anywhere, slower on very large tables) |
-| Open list on click | No | No: as in the native control, clicking focuses the box, and the chevron, the Down arrow key, Enter or typing opens the list. Yes: clicking the box opens the list |
-| Open selected records | No | No: as in the native control, the selected values are plain text. Yes: each selected value is a link that opens the record in a new browser tab. Ctrl+click and middle-click work as for any link, Enter opens the chip highlighted with the keyboard (Backspace in the empty search box, then the Left and Right arrow keys), and the links also work when the field is read-only |
 | Subgrids to refresh | empty (all subgrids with the same relationship) | Comma-separated subgrid names, or `none` (no refresh, and changes made in subgrids are not followed) |
 | Hide related subgrids | No | Yes: the control takes the place of the related subgrids and hides them. See [Subgrids](#subgrids) |
 | Placeholder | Select or search options | Text in the empty search box |
-| Copy names into the host column | No | No: nothing is written to the host column of the record. Yes: after each change is saved, the selected names (for example "API design; Automation") are written to the host column of the record in a separate update, for views, search and exports. The text is cut to the column's maximum length, so give the column room (for example 4,000 characters); records linked before the setting was turned on need a one-time update. The form is not made dirty, plug-ins, flows and auditing see the update, and users need Write on the record. Only changes made with this control or with subgrids on the same form are copied, with the records the user can see. Anyone who can read the record can read the names: when the related table holds restricted records, leave this off or secure the host column with column security (users who are not allowed to update the column then see the control read-only). With the [names copy plug-in](#names-copy-plug-in-optional) solution installed, changes made elsewhere (imports, flows, integrations or the other side of the relationship) are copied too, with every linked name. See [Copy names into the host column](#copy-names-into-the-host-column) |
-| Selection on the form | No | What the form is told about the selection, through the host column on the form. No: the column shows the names of the saved values (on a new record, the picks waiting for the first save), for scripts and the required check; the form never saves them and no event runs. Event: the same, and the column's OnChange event runs after each change of the selection, once it is saved (a removal once it has gone through, the removal of a required field's last value at once; on a new record, at each change before the first save). See [Reading the selection in form scripts](#reading-the-selection-in-form-scripts) |
+| Copy names into the host column | No | No: nothing is written to the host column of the record. Yes: after each change is saved, the selected names (for example "API design; Automation") are written to the host column of the record in a separate update, for views, search and exports. The text is cut to the column's maximum length, so give the column room (for example 4,000 characters); records linked before the setting was turned on need a one-time update. The form is not made dirty, plug-ins, flows and auditing see the update, and users need Write on the record. Only changes made with this control or with subgrids on the same form are copied, with the records the user can see. Anyone who can read the record can read the names: when the related table holds restricted records, leave this off or secure the host column with column security (users who are not allowed to update the column then see the control read-only). With the [names copy plug-in](#names-copy-plug-in-optional) solution installed, changes made elsewhere (imports, flows, integrations or the other side of the relationship) are copied too, with every linked name. With *Save the selection* = With the record, the record's save carries the names instead, and the control then checks them against the saved links. See [Copy names into the host column](#copy-names-into-the-host-column) |
+| Names separator | Semicolon (A; B) | How the names are joined in the host column: on the form, and in the text *Copy names into the host column* writes. Semicolon: "API design; Automation". Comma: "API design, Automation"; choose it only when no name contains a comma, since such a name can't be told apart from two names. Use the same value on every form that has the field, and for each copy of it on a form: where they don't agree, the semicolon is used, by the names copy plug-in (it reads the published forms) and by copies of the field open together; the copies with *Copy names* decide. Records already saved keep their text until their selection changes |
+| Selection on the form | No | What the form is told about the selection, through the host column on the form. No: the column shows the names of the saved values (on a new record, the picks waiting for the first save), for scripts and the required check; the form never saves them and no event runs. Event: the same, and the column's OnChange event runs after each change of the selection, once it is saved (a removal once it has gone through, the removal of a required field's last value at once; on a new record, at each change before the first save). With *Save the selection* = With the record, the column also holds the picks and removals waiting for the save. See [Reading the selection in form scripts](#reading-the-selection-in-form-scripts) |
+| Save the selection | At once | When picks and removals are saved. At once: each change is saved as soon as it is made, and the form is never made dirty. With the record: changes stay on the form, which shows them as unsaved changes, and are saved with the record (Save, Save & Close, Save & New, auto-save); leaving the record without saving drops them, and so does a refresh of the form that drops its unsaved changes. Changes are still saved at once in a dialog, a side pane or quick create, on appointment forms, and when the field is on the form twice. See [Save the selection](#save-the-selection-with-the-record) |
+| Write the links | After the record is saved | Used when *Save the selection* is With the record. After the record is saved: the record is saved first, then the links are written; a link the server refuses shows in the field. Before the record is saved (for the user's own Save, Save & Close and Save & New): the links are written first, and the record is saved only when they all succeed; a refused link cancels the save, and the links already written stay. To do that, the control cancels the save while the links are written and then saves the record again, so **the form's OnSave scripts run twice**. Other saves (the auto-save, leaving the record, a command, a save a script starts), and every save in an app with *Async save handler* on, write the links after the record is saved, as with After. A new record is always saved first. See [Write the links](#write-the-links-before-or-after-the-records-save) |
+| Search mode for large tables | Starts with | For tables with more than 500 records: *Starts with* (fast on any size) or *Contains* (matches anywhere, slower on very large tables) |
+| Columns under each option | None | None: each option in the list shows its name only, like the native multi-select choice. Columns to show: the columns entered in *Columns to show* appear on a second, smaller line under each name, as in a lookup. Columns of the view: the first three columns of the view in *Records from view*, or of the related table's default lookup view when no view is set, in the view's order. Rich text columns cannot be shown, and a long multiple lines of text column makes the list slower to load. The selected values keep showing their names only. See [Columns under each option](#columns-under-each-option) |
+| Columns to show | empty | Used when *Columns under each option* is Columns to show. Logical names of up to three columns of the related table, separated by commas and shown in this order, for example `new_title, statuscode, new_requestedby`; any more are ignored. Text (but not rich text), choice, yes/no, number, date and lookup columns can be shown |
+| Search the columns under each option | No | No: typing searches the names only. Yes: typing also searches the columns under each option. Lists of up to 500 records match the text of every column as shown; on larger tables, searched on the server, only the text columns among them are searched (not those with column security), as set in *Search mode for large tables*, which makes searches slower on very large tables. See [Columns under each option](#columns-under-each-option) |
+| Open list on click | No | No: as in the native control, clicking focuses the box, and the chevron, the Down arrow key, Enter or typing opens the list. Yes: clicking the box opens the list |
+| Load the list | When the form opens | When the form opens: the records that can be picked load in the background as soon as the form opens, so the list opens at once. When the list is first opened: they load only when someone opens the list or types in the box, so a form on which nobody picks loads none of them; the first opening then shows "Loading…" for a moment. See [Load the list](#load-the-list) |
+| Open selected records | No | No: as in the native control, the selected values are plain text. Yes: each selected value is a link that opens the record in a new browser tab. Ctrl+click and middle-click work as for any link, Enter opens the chip highlighted with the keyboard (Backspace in the empty search box, then the Left and Right arrow keys), and the links also work when the field is read-only |
 | Show + New button | No | Yes: adds "+ New ..." at the end of the list, which opens quick create and selects the new record if the list offers it. Only shown when the related table allows quick create |
 
-The form designer shows a fuller description of each setting as its tooltip. There, *Extra OData filter*, *Records
-from view*, *FetchXML filter*, *Subgrids to refresh* and *Placeholder* carry the suffix "(optional)".
+The table follows the order of the form designer, which shows a fuller description of each setting as its tooltip.
+There, *Extra OData filter*, *Records from view*, *FetchXML filter*, *Subgrids to refresh*, *Placeholder* and *Columns
+to show* carry the suffix "(optional)". The settings added in 1.1.0 (*Save the selection*, *Write the links*, *Columns
+under each option*, *Columns to show*, *Search the columns under each option*, *Names separator* and *Load the list*)
+change nothing with their defaults: the control then saves, loads and lists the records and joins the names as 1.0.1
+did.
 
 ### Choosing which records can be selected
 
@@ -324,7 +361,9 @@ By default every active record of the related table can be selected. Three setti
 
 * **Records from view**: the list shows what a system view of the related table shows, in the view's sort order (see
   [Sort order](#sort-order)). Enter the view's name or id. The view's filters are used, including filters on related
-  tables; its columns are ignored. The view decides which records are usable, so *Show inactive records* is ignored.
+  tables; its columns are ignored, unless *Columns under each option* is Columns of the view (see
+  [Columns under each option](#columns-under-each-option)). The view decides which records are usable, so *Show
+  inactive records* is ignored.
   In an environment with more than one language, **enter the id**: translated view names differ between languages,
   so a name that works for one user can fail for another. To find the id, open
   `<environment URL>/api/data/v9.2/savedqueries?$select=name&$filter=returnedtypecode eq '<table name>'` in the
@@ -372,6 +411,58 @@ Without a view or a complete `<fetch>` query, the list is sorted by name. With o
   orders), which is slower on very large tables and stops at 50,000 records.
 * The selected values, and the names copied into the host column, stay sorted by name.
 
+### Columns under each option
+
+By default each option in the list shows its name only, like the native multi-select choice. *Columns under each
+option* adds a second, smaller line under each name with up to three columns of the record, as a lookup shows them:
+
+* **Columns to show**: the columns typed in *Columns to show*, as logical names of the related table separated by
+  commas, in that order (for example `new_title, statuscode, new_requestedby`). The first three are used; any more are
+  ignored.
+* **Columns of the view**: the first three columns of the view in *Records from view* that can be shown, in the view's
+  order. Without a view, those of the related table's default lookup view, as for a lookup. Hidden columns, columns
+  of linked tables and the name column (the first line already shows the name) are left out.
+
+**What the second line shows.** Choices, yes/no, numbers, dates and lookups as Dataverse shows them to the user (in the
+user's date format and language), and text as it is. Empty values are left out, and the values are joined with " · ",
+for example "Water leak · In progress". A lookup to a record that has no name shows nothing. The second line is grey.
+Neither the name nor the second line wraps: a long one ends with "…". With columns, the list has room for four two-line
+rows (with or without Select all), and the check box sits in the middle of the two lines. The tooltip of a row is the
+record's name, and the selected values keep showing their names only. A column that column security keeps a user from
+reading shows empty for that user.
+
+**Rich text is not supported.** A rich text column (multiple lines of text in the rich text format, or the body of an
+e-mail) cannot be shown. Typed in *Columns to show*, the list says so (see [Messages](#messages)); among a view's
+columns it is passed over, as an image or a file column is.
+
+**Long text.** Only the start of a text is kept, at most 300 characters. A multiple lines of text column is still read
+in full for every record listed, so a long one makes the list slower to load.
+
+**Cost.** One round of small metadata requests, sent together, once per page load (with *Columns of the view*, the
+view's layout is read just before); the list's own query then also asks for the columns (and for the text Dataverse
+shows for them only when needed).
+
+**Search the columns under each option.** With No (the default), typing searches the names only. With Yes, and
+columns under the options, typing also searches those columns:
+
+* Lists of up to 500 records, filtered in the browser, match the text of every column as it is shown.
+* Larger tables are searched on the server. There the search matches the name and, among the columns, only text
+  columns (single line and multiple lines of text) without column security, with *Search mode for large tables*
+  (*Starts with* or *Contains*). This makes searches slower on very large tables.
+
+### Load the list
+
+* **When the form opens** (default): the records that can be picked load in the background as the form opens, so the
+  list opens at once. Measured in a development environment: one list request while the form opens, and the rows shown
+  about 30 ms after the click.
+* **When the list is first opened**: nothing is loaded until someone opens the list or types in the box. A form on
+  which nobody picks loads none of them, which helps on forms with several fields or with large tables, and puts less
+  load on Dataverse. The first opening shows "Loading…" for a moment (about 0.2 s in a development environment).
+
+In either case, keys pressed while the list is still loading are applied once the rows arrive, as in a loaded list;
+Enter and Space pick nothing until then. On large tables, the Down arrow key past the last loaded row loads the next
+page and moves on to its first record (instead of *+ New*).
+
 ### Subgrids
 
 After the user pauses (about half a second after the last change is saved), each related subgrid is refreshed once
@@ -397,6 +488,12 @@ and auditing on the record see that update, and the user needs Write on the reco
 opening a record never writes to it, and a new record gets its copy once, after its first save has linked the picks.
 
 ![A view with the host column filled by Copy names into the host column](docs/images/names-in-view.png)
+
+**With the record.** With *Save the selection* set to *With the record*, the names go with the record instead: the
+record's save carries them in the host column (one write, together with the record). Once the links are written, the
+control checks them against the links saved on the server (one read, and a write only when they differ, for example
+when someone changed the links meanwhile or the save had a link refused). See
+[Save the selection](#save-the-selection-with-the-record).
 
 **The saved links are read first.** Just before it writes, the control reads the record and the links saved on the
 server, in one request, and writes their names, not only the names it has on the page. A link made elsewhere while the
@@ -434,7 +531,7 @@ asking, the column can miss some names until the record's links next change (see
 | Change | Without the plug-in | With the [names copy plug-in](#names-copy-plug-in-optional) solution |
 | --- | --- | --- |
 | Made with this control | Written by the control | Written by the control. The plug-in leaves it to the control when the user could write it (see the tag below); otherwise, for example for a secured host column, the plug-in writes it too |
-| Made in a subgrid of the same form | Written by the control (not with *Subgrids to refresh* set to `none`) | Written by the plug-in, then by the control |
+| Made in a subgrid of the same form | Written by the control (not with *Subgrids to refresh* set to `none`, nor while the field is read-only) | Written by the plug-in, then by the control (not while the field is read-only) |
 | Made anywhere else: subgrids on other forms, the other side of the relationship, flows, imports, integrations, the Web API | Not copied | Written by the plug-in |
 | A linked record is deleted | Not copied: the name stays until the links next change | Written by the plug-in's Delete steps made for the linked table on the [steps page](#the-steps-page) (see [Deleting linked records](#deleting-linked-records-the-delete-steps)). Without steps for that table: not copied |
 | A linked record is renamed | Not copied: the old name stays until the links next change | Written by the plug-in's Update step made for the linked table on the steps page (see [Renaming linked records](#renaming-linked-records-the-update-step)). Without steps for that table: not copied |
@@ -462,7 +559,7 @@ same with it (no difference beyond the run-to-run variation).
 **Records linked before.** The copy is written only when a record's links change, so records linked before the
 setting was turned on (or before the plug-in solution was installed) keep a blank (or old) value until then. Fill them
 once when the setting goes live, for example with a flow or a script that writes each record's linked names, sorted
-by name and separated by `; `.
+by name and separated by `; ` (or `, ` with *Names separator* = Comma).
 
 **Who can read the copy.** The host column is an ordinary column of the record, so anyone who can read the record can
 read the copied names (in forms, views, Advanced Find, exports and the Web API), including users whose security roles
@@ -480,8 +577,8 @@ column security so that only the right people can read it (see the next section)
 ### A required host column
 
 The host column can be required: **Business Required**, required by a business rule or a script, or a required step of
-a business process flow. Each pick is saved at once and the form never saves the column, so the control keeps the
-form's own check meaningful:
+a business process flow. With *Save the selection* = At once (the default), each pick is saved at once and the form
+never saves the column, so the control keeps the form's own check meaningful:
 
 * **What the form checks.** On the form, the column holds the names of the saved values (never submitted, and the form
   is not made dirty). A value still being saved does not count yet: a save in that fraction of a second shows the
@@ -502,6 +599,14 @@ form's own check meaningful:
   (about 70 ms before that removal is sent; the value still disappears at once): if another tab or user removed the
   other values in the meantime, the removal is held back as above, and the record keeps a value.
 
+With *Save the selection* set to *With the record*, the column holds the selection that the next save is to store, so
+the form's check covers the picks and removals waiting for it: the record cannot be saved while they leave the field
+empty. When a save replaces the last value (remove A, pick B, then Save), the removal of A waits until B's link is
+saved (about 0.1 s more, only then), and a refused new link leaves A linked. When a save leaves the field one of its
+saved values, the control reads the record's links again before the removals go, as above: if another tab or user
+removed that value in the meantime, the removal isn't made, and the field shows the value that is still linked. With
+*Write the links* = Before, the save takes that read longer (about 0.1 s); with After, the record is already saved.
+
 What it does not cover (see [Limitations](#limitations)): two removals in different tabs or by different users within
 the same fraction of a second; a tab that was left open while two or more values were removed elsewhere; links changed
 outside the control (subgrids, flows, imports); and two copies of the same required field on one form in two narrow
@@ -511,7 +616,8 @@ timing cases. To make the requirement hold everywhere, enforce it on the server
 ### Reading the selection in form scripts
 
 Once the control has read the record's links, the host column on the form holds the names of the saved selected
-values, joined with "; " and cut to the column's maximum length with "…" (null when nothing is selected). A form
+values, joined with "; " (", " with *Names separator* = Comma) and cut to the column's maximum length with "…" (null
+when nothing is selected). A form
 script can read it then, for example in OnSave:
 
 ```js
@@ -519,16 +625,22 @@ const names = formContext.getAttribute("<host column>").getValue(); // "Accessib
 const anySelected = names !== null;
 ```
 
-On a saved record, a pick only shows there once its link is saved, so the value matches the links on the server. On a
-new record, the column holds the picks waiting for the first save. On a saved record, until the control has read the
-links (in the form's OnLoad, for example), while they cannot be read, and for users whom column security keeps from
-updating the column, it keeps the value the form loaded. The setting *Selection on the form* decides whether the form
-is also told when the selection changes:
+On a saved record, with *Save the selection* = At once (the default), a pick only shows there once its link is saved,
+so the value matches the links on the server. On a new record, the column holds the picks waiting for the first save.
+On a saved record, until the control has read the links (in the form's OnLoad, for example), while they cannot be read,
+and for users whom column security keeps from updating the column, it keeps the value the form loaded. The setting
+*Selection on the form* decides whether the form is also told when the selection changes:
 
 | Selection on the form | OnChange of the host column runs | The form counts it as unsaved | The form saves the names |
 | --- | --- | --- | --- |
 | No (default) | No | No | No |
 | Event | Yes, after each change, once it is saved (on a new record, at each change before the first save) | No | No |
+
+The table is for *Save the selection* = At once. When it is set to With the record, the column holds the selection as
+the next save is to store it: each pick and removal shows there at once, and the form counts it as an unsaved change
+until the record is saved. The form saves the names with the record only when *Copy names into the host column* is
+Yes. With Event, OnChange runs at each pick or removal, before it is saved, as on a new record. See
+[Save the selection](#save-the-selection-with-the-record).
 
 The names shown when the form opens never count as a change, even when the column on the record was out of date: with
 Event, an OnLoad script gets no OnChange when the names replace the loaded value. On a saved record, OnChange runs once
@@ -565,10 +677,110 @@ leaves the column as it is until it is shown again, and then starts over as when
 changed meanwhile runs no OnChange (a change saved, a new record's pick refused at a save, or a removed last value
 that comes back because hiding the field dropped its held-back removal).
 
-The form never saves the names itself and is never made unsaved by the control: to store the names on the record, turn
-on *Copy names into the host column*. Neither value makes picking slower: the link is saved first, and the form is told
-afterwards. With **Event**, OnChange scripts and business rules on the host column run after each pick or removal, so a
-slow script makes the form feel slow.
+With *Save the selection* = At once, the form never saves the names itself and is never made unsaved by the control: to
+store the names on the record, turn on *Copy names into the host column*. Neither value makes picking slower: the link
+is saved first, and the form is told afterwards. With **Event**, OnChange scripts and business rules on the host column
+run after each pick or removal, so a slow script makes the form feel slow.
+
+### Save the selection (with the record)
+
+By default (*At once*), each pick and each removal is saved as soon as it is made, and the form is never made dirty.
+Set to **With the record**, *Save the selection* makes them wait on the form, to be saved with the record:
+
+* **Unsaved changes.** The form shows the picks and removals as unsaved changes: its own unsaved-changes indicator,
+  its prompt when the user leaves the record, and its required check all work.
+* **Saved with the record.** Save, Save & Close, Save & New and the auto-save save them. Leaving the record without
+  saving (*Discard changes* in the form's prompt) drops them, and so does a refresh of the form that drops its unsaved
+  changes.
+* **The links** are written right after the record is saved (the default) or before it: see
+  [Write the links](#write-the-links-before-or-after-the-records-save). As with At once, the picks made on a new record
+  are linked once its first save has created it.
+* **The names.** With *Copy names into the host column* = Yes, the record's save carries the names in the host column
+  (one write, with the record). Afterwards the control checks them against the links saved on the server (one read,
+  and a write only when they differ, for example when someone changed the links meanwhile). With No, the form never
+  saves the host column, as with At once.
+* **A required host column.** The form's check covers the waiting changes. When a save replaces the last value
+  (remove A, pick B, then Save), the removal of A waits until B's link is saved (about 0.1 s more, only then), and a
+  refused new link leaves A linked. When a save leaves the field one of its saved values, the links are read again
+  first, and a value another tab or user removed meanwhile doesn't count: the removal isn't made then
+  ([A required host column](#a-required-host-column)).
+
+**Where changes are still saved at once.** In a dialog, a side pane or quick create, on Appointment, Recurring
+Appointment and Service Activity forms (whose saves the control cannot follow), when the field is on the form twice
+(or another field on the form edits the same relationship), and, in an app with *Async save handler* on, when the host
+column is the record's own name, changes are saved at once, as with At once. Don't put the field on quick create forms:
+there it can only show "Save the record first, then pick values here."
+
+**Good to know.**
+
+* It is not one transaction: the record's save and the links are separate requests.
+* The auto-save also saves the waiting picks.
+* Until the save, the subgrids of the relationship, and the names that the
+  [names copy plug-in](#names-copy-plug-in-optional) copies, show the old links.
+* The form can only show a change as unsaved when it changes the names in the host column. With *Copy names into the
+  host column* = No, removing every value leaves the column empty, as the form usually loaded it, so the form can't
+  show that removal as unsaved; it still waits for the next save.
+
+### Write the links (before or after the record's save)
+
+Used when *Save the selection* is *With the record*.
+
+**After the record is saved** (the default). One save: the record is saved, then the links are written right after it,
+also after Save & Close or when the user moves to another record (the writes then finish in the background). A save
+that a form script cancels writes no link. Link requests already on their way finish even if the browser tab is
+closed, and closing the tab while links are being written makes the browser ask first ("Leave site?"). A link the
+server refuses (for example, for a missing privilege) shows the error under the field, and the change is undone. While
+the record is still open, a link that fails for a passing reason (the connection, a timeout, a busy server) shows the
+error too, and waits as an unsaved change for the next save.
+
+**Before the record is saved.** The links are written first, and the record is saved only when they all succeed. A
+link that fails cancels the save: the record's other changes stay unsaved on the form, and the field shows the error.
+Links already written stay: it is not one transaction. A form can't make its save wait for a control (except in apps
+with *Async save handler* on, below), so the control cancels the user's save once all its OnSave handlers have run,
+writes the links, then saves the record again itself. The user selects Save once.
+
+**Warning: with *Before the record is saved*, the form's OnSave scripts run twice** for such a save: once in the save
+that is cancelled, and once in the save made again. A script that creates a record or calls a service in OnSave does it
+twice; a script that asks a question on every save ("Are you sure?") asks twice. Scripts that only check or set fields
+on the form are not affected. OnPostSave scripts, plug-ins and flows run once, because the record reaches Dataverse
+once. **Recommendation:** use *After the record is saved* unless a plug-in, flow or script needs the links to exist at
+the moment the record is saved.
+
+More about *Before the record is saved*:
+
+* A save that a form script cancels (for example, a validation script that calls `preventDefault`) writes no link,
+  whenever the script added its OnSave handler: when the form loads, in the form's OnSave event, or later in code. The
+  one exception is a handler that another OnSave handler adds while the save's handlers run: it runs after the control's
+  check, so its cancel comes when the links are already on their way. Register validation handlers when the form loads.
+* Only the user's own Save (the command bar's button or Ctrl+S), Save & Close and Save & New write the links first,
+  each known by the click or key that starts it. Save & Close and Save & New are made again with their mode: the form
+  closes, or a new one opens, once the record is saved. The save of a command of your own goes ahead as a script's
+  save (below), also when its button is named like Save.
+* Other saves go ahead, with their links after them, as with After: the auto-save, leaving the record (the auto-save
+  when the user moves away), *Save and continue* in the form's unsaved-changes prompt, the saves of commands
+  (Deactivate, Assign, Mark complete and the like), and a save that a script starts (`formContext.data.save()`, whatever
+  save mode it passes): cancelling it would stop a script that waits for its save to go on.
+* Such a save that comes while the links are being written (the user leaves the record, for example) goes ahead too, and
+  the control doesn't save the record again. The links on their way are still written.
+* A new record is always saved first, whatever this setting: its links need its id.
+
+**Apps with *Async save handler* on.** With this app setting on, one OnSave handler can't see another one cancel the
+save, so the links can't safely go first: there *Before the record is saved* acts like *After the record is saved*
+(one save, the links right after the record is saved, and the scripts run once). A save that a form script cancels
+writes no link there either, except in one case, with either value: when the selection is the only change, the links
+are written all the same, because the save sends nothing either way and the control can't see that it was cancelled.
+On a new record, while its first save hasn't said how it went (an OnSave handler of the app holds it, or cancelled it
+without the control seeing it), the picks it carries don't count as an unsaved change of the form on their own: that
+save may still be sent, and it must never carry the host column. A change of the picks counts once the record is saved,
+or once that save has said nothing for 60 seconds, and the next save carries every pick.
+
+To see whether an app has it on:
+
+1. Go to [make.powerapps.com](https://make.powerapps.com) and select the environment.
+2. Select **Apps**, open the app's menu (**...**) and select **Edit**. The app designer opens.
+3. Select **Settings** (the gear), then **Features**.
+4. **Async save handler** shows whether it is on. The setting is per app; after changing it, select **Save**, then
+   **Publish**.
 
 ### Column security on the host column
 
@@ -618,6 +830,10 @@ allowed (it takes no new place), and a pick that takes no new place is never ref
 holds more links than the limit (made elsewhere, or the limit was lowered). This costs no extra request, and nothing
 changes below the limit or without a maximum.
 
+With *Save the selection* set to *With the record*, a removal waiting for the save frees its place at once, so that
+another record can be picked in its place before the save. If the server then refuses that removal when the record is
+saved, the record can end up with more links than the limit.
+
 **Where the limit applies.** Each copy of the field checks the limit on its own, with the links it knows: two copies
 of the same field on one form, two browser tabs, or two users can together go over it. Subgrids, imports, flows,
 integrations and the Web API are not limited at all. To make the limit hold everywhere, enforce it on the server
@@ -643,8 +859,9 @@ typing, Enter and the chevron do nothing, and a second quick create cannot start
 
 ![Quick create open: the field keeps its focused look and the list is closed](docs/images/quick-create-open.png)
 
-* After **Save and Close**, the new record is selected and linked straight away, provided the list offers it (it is
-  active and matches the view and filters of the field), and the focus is back in the search box with the list closed.
+* After **Save and Close**, the new record is selected and linked straight away (with *Save the selection* = With the
+  record, linked when the record is saved), provided the list offers it (it is active and matches the view and filters
+  of the field), and the focus is back in the search box with the list closed.
   When the list does not offer it, it is created but not selected, and a message under the field says so.
 * After **Cancel** (or closing quick create), the focus is back in the search box, without a new value.
 
@@ -724,7 +941,8 @@ when records change, wherever the change comes from.
   rewrites the host column of the records linked to it (see
   [Renaming linked records](#renaming-linked-records-the-update-step)).
 * **The same text as the control**: the names sorted by name (ignoring case and accents, numbers in numeric order),
-  separated by `; `, cut to the column's maximum length with "…", and empty when nothing is linked.
+  separated by `; ` (or `, ` when every copy of the field with *Copy names*, on every form, says *Names separator* =
+  Comma), cut to the column's maximum length with "…", and empty when nothing is linked.
 * **It writes as the system user** (SYSTEM), so the text it writes holds every linked name, including records some
   readers of the host record cannot open, and the write works whatever column security the host column has. Writing as the user
   who made the link is not offered: linking only needs Append / Append To, while the update would then also need Write
@@ -856,8 +1074,9 @@ page leaves them as they are.
 `https://contoso.crm.dynamics.com/WebResources/kv_/NToNMultiSelect/namescopysteps.html`. The page runs at the
 environment's own address and calls the Dataverse Web API with your session and privileges: it has no sign-in and no
 server code of its own. Opened anywhere else, for example in a preview in the maker portal, it cannot reach Dataverse
-and says where to open it. Any user can open it; only System Customizers and System Administrators can create or
-remove steps (Dataverse refuses the others, and the page explains it).
+and says where to open it. Any user can open it; only System Administrators can create or remove steps (the default
+System Customizer role has no privilege to create, change or delete plug-in steps: Dataverse refuses, and the page
+explains it).
 
 ![The steps page: a relationship found on two forms, and its linked table with its three steps on, each in NToNMultiSelectWithPlugin](docs/images/steps-page.png)
 
@@ -912,12 +1131,16 @@ where new steps go:
   *Delete 2 of 2 (update their names)* (PostOperation, stage 40), *Delete 1 of 2 (find linked records)*
   (PreValidation, stage 10) and *Update (follow renames)* (PreOperation, stage 20, with the table's primary name
   column as filtering attribute, so that Dataverse calls it only for updates that set the name). All three are
-  synchronous and named "N:N Multi-Select names copy: &lt;step&gt; for &lt;table&gt;".
+  synchronous and named "N:N Multi-Select names copy: &lt;step&gt; for &lt;table&gt;". The Update step has the execution
+  order 1000, the Delete steps 1 (see [Renaming linked records](#renaming-linked-records-the-update-step)).
 * Each step has a **fixed id calculated from the table name and the step** (a name-based UUID, version 5). Running
   Create again updates the same steps and never makes a second set, also after the steps were moved to another
   solution, and the same table gets the same ids in every environment. Create turns a step that was off back on, and
   corrects in place a step shown as *Other settings: Create updates it* (its stage, mode, table or filtering
-  attribute); the step stays in the solutions it is in.
+  attribute); the step stays in the solutions it is in. It keeps a higher execution order you set on a step, and
+  raises a lower one. A step with one of the page's ids that another tool put on another plug-in is never changed:
+  that table stops with "&lt;step&gt; is registered on another plug-in: delete that step with the Plugin Registration
+  Tool, then Create."
 * **A step on another message.** A step's message (Delete or Update) cannot be changed, and the page deletes a step
   only when you remove it. When another tool has put one of the page's steps on another message, section 2 shows it
   in red as *On &lt;message&gt;, not &lt;its message&gt;: Remove, then Create*, and Create skips that table whole: it
@@ -939,12 +1162,15 @@ the system solutions Default, Active and Basic do not count):
   contains the plug-in comes first, shown as "&lt;name&gt; (with the plug-in)", and is chosen until you choose
   another; the others follow by name. The choice is kept in that browser for that environment and written to the log
   ("New steps go into &lt;name&gt;."); when the solution chosen is no longer one of them, the first one is used.
-* **In none** (the page is only in managed solutions, for example in test or production with the managed package):
-  into an unmanaged solution `NToNMultiSelectTableSteps`, which the page makes only when a new step needs it, with the
-  publisher of a solution that contains the plug-in. Where `NToNMultiSelectTableSteps` is itself installed managed
-  (for example deployed from development), nothing can be added to it, so new steps go into no solution (Dataverse
-  keeps them in the environment's default solution); the page says so under its buttons and before Create: "New steps
-  made here are not added to a solution."
+* **In none, with the plug-in from a managed solution** (test or production with the managed package): the page
+  creates no steps. **Create** is greyed out, and the note under the buttons says "The plug-in comes from a managed
+  solution here: create the steps in development and deploy them with your solution." The **Remove** buttons still
+  delete steps the page made there before.
+* **In none, with the plug-in in an unmanaged solution:** into an unmanaged solution `NToNMultiSelectTableSteps`,
+  which the page makes only when a new step needs it, before it writes any step, with the publisher of a solution that
+  contains the plug-in. Where `NToNMultiSelectTableSteps` is itself installed managed, nothing can be added to it, so
+  new steps go into no solution (Dataverse keeps them in the environment's default solution); the page says so under
+  its buttons and before Create: "New steps made here are not added to a solution."
 
 The page **never moves a step between solutions and never deletes a solution**: steps that already exist stay in the
 solutions they are in (move them yourself, for example into the solution you deploy), and only a step that is in no
@@ -952,14 +1178,15 @@ solution at all (because adding it failed earlier) is added to the solution new 
 and Create then makes again is a new step, so it goes only into the solution new steps go into. Managed steps are never
 changed or removed by the page.
 
-**Test and production.** Where a managed solution contains the plug-in and the page is in no unmanaged solution,
-Create warns first: this is probably a test or production environment. The usual way is to create the steps in
-development and deploy them with the solution you deploy; steps created in test or production would have the same ids
-and block that import.
+**Test and production.** Where a managed solution contains the plug-in and the page is in no unmanaged solution, the
+page doesn't create steps (see **Where new steps go**): create them in development and deploy them with the solution
+you deploy. Steps created in test or production would have the same ids and block that import.
 
 **Deploying the steps.** In development the page puts new steps into the unmanaged solution it is in, normally
-`NToNMultiSelectWithPlugin`. To take them to test and production, add them to the solution you deploy (**Solutions** →
-your solution → **Add existing** → plug-in step), or deploy from development the solution that holds them. To have new
+`NToNMultiSelectWithPlugin`. To take them to test and production, add them to a solution of your own that you deploy
+(**Solutions** → your solution → **Add existing** → plug-in step). Don't deploy `NToNMultiSelectWithPlugin` itself
+from development to take them there: the next package from the [Releases](../../releases) page, imported over it as
+an upgrade, removes the components it doesn't contain, and with them the steps. To have new
 steps go straight into the solution you deploy, add the steps page to it in development (**Add existing** → **More** →
 **Web resource**, `kv_/NToNMultiSelect/namescopysteps.html`) and, when the page is then in more than one unmanaged
 solution, choose that one on the page; steps made before stay where they are. The page then also goes with that
@@ -977,10 +1204,11 @@ steps made here **before
 you uninstall the plug-in**: the steps depend on it, and Dataverse refuses the uninstall while they exist (see
 [Uninstall](#uninstall)).
 
-**Imports.** Importing `NToNMultiSelectWithPlugin` again, upgrades included, does not touch the steps made on the
-page: they are components of their own, with their own ids, and an unmanaged import adds and updates components, it
-does not take them out of a solution. An unmanaged import turns the Associate and Disassociate steps back on and
-re-creates deleted ones; after a managed import, check them (see [Turning steps off](#turning-steps-off)).
+**Imports.** Importing `NToNMultiSelectWithPlugin` again, upgrades included, does not touch the steps made on the page
+(unless they were deployed inside it, see **Deploying the steps**): they are components of their own, with their own
+ids, and an unmanaged import adds and updates components, it does not take them out of a solution. An unmanaged import
+turns the Associate and Disassociate steps back on and re-creates deleted ones; after a managed import, check them (see
+[Turning steps off](#turning-steps-off)).
 
 **Tested** in a development environment: the steps created for the linked table only, and only in
 `NToNMultiSelectWithPlugin`, with the same ids after Remove and Create; a rename and a delete followed by them alone;
@@ -991,7 +1219,10 @@ put on another message shown as such, its table skipped by Create with no step d
 Remove and made again by Create on their own messages, with the same ids, in `NToNMultiSelectWithPlugin`; and, with
 the page also added to a second unmanaged solution, the list with `NToNMultiSelectWithPlugin (with the plug-in)` first
 and chosen, the steps made after choosing the other solution in that solution only, and the choice kept after a
-reload.
+reload. The managed cases were tested with the page in a browser against an in-memory Dataverse: with the plug-in and
+the page only in a managed solution, Create greyed out with the note, nothing written, and Remove still deleting a step
+made there before; with the page also in an unmanaged solution of yours, the steps made in that solution; and
+`NToNMultiSelectTableSteps` made before any step is written, with no step written when it can't be made.
 
 ### Deleting linked records (the Delete steps)
 
@@ -1002,9 +1233,18 @@ deletes of that table.
   Step 2 rewrites their host column once the record is gone, about 80–100 ms per record.
 * The two steps share a **30-second budget per delete operation** (a delete and the deletes it cascades to), which
   covers roughly **300–350** linked records. Records left when the time has run out, and records beyond the first
-  **5,000**, keep the deleted name until their links next change. This is written to the plug-in trace log.
-* The user who deletes waits while the names are rewritten. The budget keeps the delete well within the 2 minutes
-  after which Dataverse cancels an operation.
+  **5,000**, keep the deleted name until their links next change. This is written to the plug-in trace log. Once the
+  time has run out, step 1 reads nothing either.
+* The user who deletes waits while the names are rewritten. The budget bounds the rewrites, not the steps themselves:
+  every deleted record of the table still calls both (15–50 ms). A delete that cascades to thousands of records of the
+  table can take minutes and reach the 2 minutes after which Dataverse cancels an operation, which undoes it: turn the
+  table's Delete steps off before such a delete ([Turning steps off](#turning-steps-off)).
+* **A host record that can't be updated blocks the delete.** Step 2 rewrites the records it reaches inside the
+  delete's transaction, so one refused update undoes the whole delete, also a delete that cascades from another
+  record. Such a record is one that Dataverse keeps read-only once it is closed (for example a resolved or cancelled
+  case, or a closed quote, order or invoice), or one that a plug-in, real-time workflow or business rule of its table
+  refuses to change; the message names it. Unlinking it is refused for the same reason. Reopen that record, or turn
+  the table's Delete steps off first; the host records then keep the deleted name.
 * When step 1 cannot read the linked records of a delete made on its own (not inside a transaction), the delete
   goes ahead and those records keep the name. Any other failed read or write undoes the delete with a message that
   starts "N:N Multi-Select could not ...".
@@ -1018,6 +1258,9 @@ primary name column, so Dataverse calls it only for updates of that table that s
   that is being replaced. It does something only when the update sets the primary name column of a table whose names a
   form copies (for example the skill's name, when a project form copies skill names). Then it reads the saved name
   (one query) and compares it with the new one.
+* It runs after the table's other PreOperation steps of the update (execution order 1000), so a name that one of
+  them changes before the save is the one copied. Create keeps a higher execution order you set, and raises a lower
+  one.
 * **An update that sets the name it already has**, or that sets other columns only, writes nothing.
 * **When the name changes**, it reads the records linked to the renamed record, up to 5,000 for each relationship
   that is copied, and rewrites their host column with the new name in its place in the order, about 80–100 ms per
@@ -1026,6 +1269,8 @@ primary name column, so Dataverse calls it only for updates of that table that s
   links next change. This is written to the plug-in trace log.
 * The user who renames waits while the names are rewritten.
 * A failed read or write undoes the rename with a message that starts "N:N Multi-Select could not ...".
+* **A host record that can't be updated blocks the rename** as it blocks a delete: reopen it, or turn the table's
+  Update step off; the host records then keep the old name.
 * In a self-referencing relationship, a record linked to itself gets its own new name within the same update.
 * Keep the step **synchronous** and in **PreOperation**: in any other stage it does nothing.
 
@@ -1062,7 +1307,8 @@ Rules:
    managed import, check them. Do so after every import of `NToNMultiSelectWithPlugin`, upgrades included, and turn
    them off again where needed. Imports do not touch the steps made on the [steps page](#the-steps-page).
 4. For the steps made on the steps page, the page is the simpler way: its **Remove** buttons delete the three steps of
-   a table in one go, and **Create** makes them again, or turns them back on.
+   a table in one go, and **Create** makes them again, or turns them back on (where it can create steps: not in a
+   managed installation, see [The steps page](#the-steps-page)).
 
 To turn a step off:
 
@@ -1084,21 +1330,21 @@ To turn a step back on later, select it on its own and select **Turn on**. To de
 installation only), select it, choose **Remove** → **Delete from this environment** and confirm.
 
 Steps made on the page can be turned off here like any other step; the page then shows them *Off*, **Create** on the
-page turns them back on, and its **Remove** buttons delete them.
+page turns them back on where it can create steps, and its **Remove** buttons delete them.
 
 **Removing the plug-in and keeping the control.** For an environment that does not need the plug-in at all, use the
-solution without the plug-in. To remove the plug-in from an environment that has `NToNMultiSelectWithPlugin`, first
-remove the steps made on the [steps page](#the-steps-page) (**Remove all the steps made here**; steps deployed with a
-managed solution of your own are removed as in step 2 of [Uninstall](#uninstall)): they depend on the plug-in, and
-Dataverse refuses to remove it while they exist. Then:
+solution without the plug-in. Where `NToNMultiSelectWithPlugin` is installed:
 
-* **Managed:** import the managed solution without the plug-in if it is not installed yet, then delete
-  `NToNMultiSelectWithPlugin`, and `NToNMultiSelectTableSteps` if the steps page made one (it holds steps only). The
-  control and the form library stay, because the other solution still contains them.
-* **Unmanaged:** open `NToNMultiSelectWithPlugin`, delete its Associate and Disassociate steps one at a time, then the
-  plug-in assembly `NToNMultiSelect.NamesCopy` and the steps page `kv_/NToNMultiSelect/namescopysteps.html`
-  (**Remove** → **Delete from this environment**), then delete the solution itself, and `NToNMultiSelectTableSteps`
-  if the steps page made one. The control and the form library stay in the environment.
+* **Managed:** turn its steps off instead, as above: the Associate and Disassociate steps, and the Delete and Update
+  steps of your tables. The control then writes the names itself, as with the solution without the plug-in. Deleting
+  `NToNMultiSelectWithPlugin` removes the control too, even when the solution without the plug-in is installed, and
+  Dataverse refuses it while forms use the control (see [Uninstall](#uninstall)).
+* **Unmanaged:** first remove the steps made on the [steps page](#the-steps-page) (**Remove all the steps made
+  here**): they depend on the plug-in, and Dataverse refuses to remove it while they exist. Then open
+  `NToNMultiSelectWithPlugin`, delete its Associate and Disassociate steps one at a time, then the plug-in assembly
+  `NToNMultiSelect.NamesCopy` and the steps page `kv_/NToNMultiSelect/namescopysteps.html` (**Remove** → **Delete from
+  this environment**), then delete the solution itself, and `NToNMultiSelectTableSteps` if the steps page made one.
+  The control and the form library stay in the environment.
 
 ### What the plug-in does not cover
 
@@ -1119,8 +1365,8 @@ Dataverse refuses to remove it while they exist. Then:
 ## Messages
 
 The control explains every problem in the user's language. Problems with a change appear under the field (a change
-that fails is undone). Problems with the list appear in the list, including a view, FetchXML filter or Extra OData
-filter that cannot work. A missing or wrong relationship name appears in the field itself.
+that fails is undone). Problems with the list appear in the list, including a view, FetchXML filter, Extra OData
+filter or *Columns to show* that cannot work. A missing or wrong relationship name appears in the field itself.
 The [technical reference](docs/NToNMultiSelect%20-%20Technical%20Reference.docx) lists every text the control shows,
 in English and French (Appendix A). The failures below were produced on purpose in a development environment.
 
@@ -1156,31 +1402,53 @@ the valid names and the views with their ids):
 
 ![View not found](docs/images/message-view-not-found.png)
 
+**A column in *Columns to show* that cannot be shown** (a name the related table does not have, or a column that can't
+be shown under the options, such as rich text), in the list: "The table &lt;table&gt; has no column
+"&lt;column&gt;" that can be shown under the options. Enter the logical name of a text, choice, yes/no, number, date
+or lookup column."
+
 **The names copy plug-in could not copy the names** (solution with the plug-in): the link is undone, and the message
 under the field gives the plug-in's reason, which starts with "N:N Multi-Select could not ...", for example "N:N
 Multi-Select could not copy the names into &lt;table.column&gt;: &lt;reason&gt;".
 
 ## Upgrade
 
-### Upgrading from 1.0.0
+### Upgrading from 1.0.1
 
-This release is version 1.0.1, so it installs over 1.0.0 like any update. Import the package over the installed
-solution: the same solution and the same kind as before (managed over managed, unmanaged over unmanaged). After an
-unmanaged import, select **Publish all customizations**. The forms keep the control and its settings.
+This version is 1.1.0 (the solutions are 1.1.0.0), so it installs over 1.0.1 like any update. Import the package over
+the installed solution: the same solution and the same kind as before (managed over managed, unmanaged over
+unmanaged). After an unmanaged import, select **Publish all customizations**.
 
-For the solution with the plug-in, the import also updates the plug-in and its Associate and Disassociate steps. An
-unmanaged import turns those steps back on and re-creates deleted ones; after a managed import, check them. If they were
-turned off, turn them off again ([Turning steps off](#turning-steps-off)). The import does not touch the steps made on
-the [steps page](#the-steps-page).
+The forms keep the control and their settings. The seven new settings (*Save the selection*, *Write the links*,
+*Columns under each option*, *Columns to show*, *Search the columns under each option*, *Names separator* and *Load
+the list*) take their defaults, with which the control saves, loads and lists the records and joins the names as
+1.0.1 did; set them on the forms where you want them. One change shows with the defaults: the field no longer shows a
+grey note under it. "Your selections are linked when you save the record." (on a new record) and "Not available while
+you're offline." are gone; a new record's picks are still linked when it is saved, and the field is still read-only
+offline.
+
+For the solution with the plug-in: its assembly keeps version 1.0.0.0, but its content is new (it reads *Names
+separator* from the forms), and importing the 1.1.0 package brings it in. An unmanaged import turns its Associate and
+Disassociate steps back on and re-creates deleted ones; after a managed import, check them. If they were turned off,
+turn them off again ([Turning steps off](#turning-steps-off)). The import does not touch the steps made on the
+[steps page](#the-steps-page), unless they were deployed inside `NToNMultiSelectWithPlugin`: then add them to a solution
+of your own and deploy that first, as the upgrade removes the components the package doesn't contain.
 
 The new version takes effect when the customizations are published. A user's first page load after that can still
-run the old version; from the next load on, it runs 1.0.1. Users who still see the old behaviour reload the page once
+run the old version; from the next load on, it runs 1.1.0. Users who still see the old behaviour reload the page once
 more.
+
+### Upgrading from 1.0.0
+
+Version 1.1.0 also installs over 1.0.0 like any update, in the same way: import the package over the installed
+solution, the same solution and the same kind as before, and after an unmanaged import select **Publish all
+customizations**. The forms keep the control and its settings, and the settings added since 1.0.0 take their defaults.
+The notes above on the plug-in's steps and on the first page load after the publish apply too.
 
 ### Replacing an installed copy of the same version
 
 Dataverse keeps the old code component when a solution with the same control version is imported, so a rebuilt package
-that keeps the installed version (for example a corrected 1.0.1 over an installed 1.0.1) needs the old copy removed
+that keeps the installed version (for example a corrected 1.1.0 over an installed 1.1.0) needs the old copy removed
 first:
 
 1. Note the control's settings on each form that uses it (relationship schema name, view, FetchXML filter and the
@@ -1204,7 +1472,7 @@ installation the import of the solution with the plug-in replaces them, and in a
 solution removes them and the import brings them back. An unmanaged import turns the Associate and Disassociate steps
 back on and re-creates deleted ones; after a managed import, check them. If they were turned off, turn them off again
 ([Turning steps off](#turning-steps-off)). The import does not touch the steps made on the
-[steps page](#the-steps-page).
+[steps page](#the-steps-page), unless they were deployed inside `NToNMultiSelectWithPlugin`.
 
 **Managed installations and the steps made on the steps page.** Step 3 deletes the solution with the plug-in, and
 Dataverse refuses to remove the plug-in while those steps exist, so remove them first, as in step 2 of
@@ -1217,13 +1485,14 @@ To add the plug-in to an environment that has the solution without it, see [Whic
 
 ### Releasing a new version of your own
 
-1. Raise `version` in `control/NToNMultiSelect/ControlManifest.Input.xml` (for example 1.0.1). The build stamps the
-   same number into the solution (1.0.1.0) and the form library.
+1. Raise `version` in `control/NToNMultiSelect/ControlManifest.Input.xml` (for example 1.1.1). The build stamps the
+   same number into the solution (1.1.1.0) and the form library.
 2. Run `node scripts/build.mjs`, and then `node scripts/build-with-plugin.mjs` for the solution with the plug-in.
 3. Import the new package over the installed solution, the same kind as before (managed over managed, unmanaged over
    unmanaged). For the unmanaged package, select **Publish all customizations** afterwards. An unmanaged import turns
    the Associate and Disassociate steps back on and re-creates deleted ones; after a managed import, check them. If one
-   of them was turned off, turn it off again (the steps made on the steps page need nothing).
+   of them was turned off, turn it off again (the steps made on the steps page need nothing, as long as they are not
+   inside `NToNMultiSelectWithPlugin`).
 
 **Always raise the version.** Dataverse does not replace a code component when a solution with the same control
 version is imported, so the old bundle would stay in place.
@@ -1243,9 +1512,10 @@ version is imported, so the old bundle would stay in place.
    * Managed: **Solutions** → **Managed** → select *N:N Multi-Select* → **Delete**. This removes the control and the
      web resource and, for the solution with the plug-in, also the plug-in assembly, its Associate and Disassociate
      steps and the steps page. If both are installed (two rows named *N:N Multi-Select*, with the names
-     `NToNMultiSelect` and `NToNMultiSelectWithPlugin`), delete both. Dataverse keeps a component while any installed
-     managed solution still contains it, so deleting only `NToNMultiSelectWithPlugin` removes just the plug-in. Then
-     delete `NToNMultiSelectTableSteps` too if the steps page made one (it holds steps only).
+     `NToNMultiSelect` and `NToNMultiSelectWithPlugin`), delete both: deleting `NToNMultiSelectWithPlugin` removes the
+     control too, even while `NToNMultiSelect` is installed (to stop only the plug-in, turn its steps off instead, see
+     [Turning steps off](#turning-steps-off)). Then delete `NToNMultiSelectTableSteps` too if the steps page made one
+     (it holds steps only).
 
      ![Managed solutions](docs/images/uninstall-managed-1.png)
    * Unmanaged: deleting the solution removes only the container. Delete the components themselves first: open the
@@ -1274,12 +1544,19 @@ columns. The publisher `KV` stays in the environment and can be deleted separate
 | "... is not a many-to-many relationship of ..." | The schema name is wrong or belongs to another table. The message lists the valid names |
 | A view name is not found, or is reported as translated | Enter the view's id instead of its name |
 | The form cannot be saved while the field is empty | The host column is required (Business Required, a business rule, or a step of a business process flow), so a value must be picked, which is what a required column is for. To make the field optional, make the column optional |
-| A removed value comes back after leaving the record | The host column is required and it was the last value: its removal is only sent once another value is saved ([A required host column](#a-required-host-column)) |
+| A removed value comes back after leaving the record | The host column is required and it was the last value: its removal is only sent once another value is saved ([A required host column](#a-required-host-column)). With *Save the selection* = With the record, leaving the record without saving drops every change made since the last save ([Save the selection](#save-the-selection-with-the-record)) |
 | "You don't have permission ..." with a privilege name | The user's security role lacks that privilege (for example `prvAppendToContact`) |
 | The field is read-only although the form can be edited | Column security secures the host column and the user's field security profile does not allow Update on it. Allow Update, or use a host column that is not secured ([Column security](#column-security-on-the-host-column)) |
 | At the limit of *Maximum selections*, the other rows stay greyed out after a value was removed | A record keeps its place until its removal is saved, usually a fraction of a second. After a change that failed with a lost connection, a timeout or a server error, which the server may have saved all the same, the place is held until the control has read the saved links again: it tries again after 1, 3 and 9 seconds, and then with the next read of the links, for example when the connection comes back or the record is opened again ([Maximum selections](#maximum-selections)) |
 | A record has more links than *Maximum selections* | The limit is checked only in the control, by each copy of the field on its own: two copies of the field on one form, two browser tabs or two users can together go over it, and subgrids, imports, flows and integrations are not limited. Links made before the limit was lowered stay. To make it hold everywhere, enforce it on the server ([Enforcing the rules on the server](#enforcing-the-rules-on-the-server)) |
+| With *Save the selection* = With the record, picks are still saved at once | The field is in a dialog, a side pane or quick create, on an Appointment, Recurring Appointment or Service Activity form, or on the form twice (or another field on the form edits the same relationship), or, in an app with *Async save handler* on, its host column is the record's own name: there changes are saved at once ([Save the selection](#save-the-selection-with-the-record)) |
+| The form's OnSave scripts run twice (a record created twice, a question asked twice) | *Write the links* is *Before the record is saved*: the control cancels the user's save once its OnSave handlers have run, writes the links, then saves the record again, so the OnSave handlers run in both saves. Use *After the record is saved* unless a plug-in, flow or script needs the links to exist at the moment the record is saved ([Write the links](#write-the-links-before-or-after-the-records-save)) |
+| With *Write the links* = Before the record is saved, the links are written after the record's save | The app has *Async save handler* on, where Before acts like After; or the save was not the user's own Save, Save & Close or Save & New: the auto-save, leaving the record, *Save and continue* in the form's prompt, the save of a command such as Deactivate or Assign, or a save started by a script ([Write the links](#write-the-links-before-or-after-the-records-save)) |
+| *Columns to show* gives "The table ... has no column "..." that can be shown under the options" | The name is not the logical name of a column of the related table, or the column can't be shown under the options: rich text (multiple lines of text in the rich text format, or the body of an e-mail), an image or a file. Enter a text, choice, yes/no, number, date or lookup column ([Columns under each option](#columns-under-each-option)) |
+| A column of the view is missing under the options | Only the first three columns of the view that can be shown are used. The name column (already the first line), rich text, image and file columns, hidden columns and columns of linked tables are passed over ([Columns under each option](#columns-under-each-option)) |
+| The list loads slowly with columns under each option | A multiple lines of text column is read in full for every record listed, although the line under the name keeps only its start (at most 300 characters), so long texts make the list slower to load. Show a shorter column instead ([Columns under each option](#columns-under-each-option)) |
 | The names column is not updated for links made outside the form | `NToNMultiSelectWithPlugin` is not installed, its Associate and Disassociate steps are turned off, or no active form has *Copy names into the host column* set to Yes for that relationship (with the relationship name typed under *Static value*). After publishing a form change, wait up to 2 minutes |
+| A linked record can't be deleted or renamed: "N:N Multi-Select could not copy the names into &lt;table.column&gt; of &lt;table&gt; &lt;id&gt;: ..." | That host record can't be updated: read-only once closed (a resolved case, a closed quote), or refused by a plug-in, real-time workflow or business rule of its table. Reopen it, or turn the table's Delete and Update steps off ([Turning steps off](#turning-steps-off)): the host records then keep the deleted or old name |
 | The names column still shows a record that was deleted | The record's table has no Delete steps (create them on the [steps page](#the-steps-page)), its Delete steps are turned off, or the deleted record had more linked records than its delete could update (about 300–350 within the 30-second budget, at most 5,000). The name goes when those records' links next change |
 | The names column still shows a record's old name | The record's table has no Update step (create it on the [steps page](#the-steps-page)), its Update step is turned off, or the renamed record had more linked records than its rename could update (about 300–350 within the 30-second budget, at most 5,000). The old name goes when those records' links next change |
 | The names column misses a name although its link is saved | The page was left while the control was still saving (**Leave** in the browser's prompt), or the browser or app closed without asking (a crash, the mobile app closed), before the control wrote the names: it writes them once the last link of a batch is saved, and the names copy plug-in leaves the control's own links to it. Or a link was made elsewhere in the moment between the control's read of the saved links and its write. In both cases the names are written with the record's next change of links ([Limitations](#limitations)) |
@@ -1290,7 +1567,7 @@ columns. The publisher `KV` stays in the environment and can be deleted separate
 | A request that links or unlinks very many records at once is rolled back | Each host record is rewritten in the same transaction, about 80–100 ms each: more than about 1,000 host records in one request can reach the 2-minute limit of synchronous plug-ins. Link in smaller batches ([Limitations](#limitations)) |
 | The steps page says "The names copy plug-in is not installed in this environment" | Import `NToNMultiSelectWithPlugin` first, then open the page again |
 | The steps page says "Open this page at your environment's address" | It was opened somewhere it cannot reach Dataverse, for example a preview in the maker portal or the file opened from disk. In a browser where you are signed in to the environment, open `https://<your environment>/WebResources/kv_/NToNMultiSelect/namescopysteps.html` ([The steps page](#the-steps-page)) |
-| The steps page says "You do not have the privileges to change plug-in steps or solutions" | Only System Customizers and System Administrators can create or remove steps; Dataverse refuses the others. Ask one of them, or have that security role assigned |
+| The steps page says "You do not have the privileges to change plug-in steps or solutions" | Only System Administrators can create or remove steps; the default System Customizer role has no privilege to create, change or delete plug-in steps, and Dataverse refuses the others. Ask a System Administrator |
 | The steps page shows a step "On &lt;message&gt;, not &lt;its message&gt;: Remove, then Create", and Create skips its table | Another tool, for example the Plugin Registration Tool, put that step on another message, and a step's message cannot be changed. The page deletes a step only when you remove it: tick the table, select **Remove the steps of the ticked tables**, then **Create or update the steps of the ticked tables**. Create makes the three steps again on their own messages, with the same ids, in the solution new steps go into; add them to your own solution again if they were in one and new steps go elsewhere ([The steps page](#the-steps-page)) |
 | Uninstall of the plug-in is refused because steps depend on it | Steps made on the [steps page](#the-steps-page) depend on the plug-in. Open the page, select **Remove all the steps made here**, then uninstall again. Steps that came with a managed solution of your own are skipped by the page: remove them from that solution in development and deploy it again, or delete that solution ([Uninstall](#uninstall)) |
 | A link, delete or rename is undone with "N:N Multi-Select could not ..." | The names copy plug-in could not read the form settings or the links, or could not write the host column (for example, another plug-in or a rule refused the update of the host record). The message gives the reason |
@@ -1325,8 +1602,8 @@ environment.
   already saved stay, but the host column can miss their names until the record's links next change. The names copy
   plug-in, when installed, does not fill them in: it leaves the control's own links to the control
   ([the tag](#copy-names-into-the-host-column)). Only writing the names on the server for every link would cover this;
-  that is not done, because it would cost about 70 ms per link. An update of the column that is already on its way is
-  finished by the browser (`keepalive`).
+  that is not done, because it would cost about 70 ms per link. Link requests and an update of the column that are
+  already on their way are finished by the browser (`keepalive`).
 * **Names copy and changes made at the same moment.** A change made elsewhere between the control's read and its write
   makes Dataverse refuse the write, and the control reads again and writes the names saved now. When the record keeps
   changing (refused again after three more tries), the control reports that the names could not be copied, and the
@@ -1346,25 +1623,43 @@ environment.
   transaction, about 80–100 ms each. More than about 1,000 host records in one request can reach the 2-minute limit of
   synchronous plug-ins; Dataverse then rolls the whole request back. Link in smaller batches.
 * **Text length.** The copy is cut to the host column's maximum length.
-* **Saving.** Each pick is saved immediately. Discarding the form's other changes does not undo picks. With *Selection
-  on the form* set to No (the default), the control shows the names in the host column on the form without raising its
-  OnChange event, so business rules and OnChange scripts on it do not run when records are picked; Event runs
-  them (see [Reading the selection in form scripts](#reading-the-selection-in-form-scripts)). With Event, two copies
+* **Saving.** With *Save the selection* set to At once (the default), each pick is saved immediately, and discarding
+  the form's other changes does not undo picks. With *Selection on the form* set to No (the default), the control
+  shows the names in the host column on the form without raising its OnChange event, so business rules and OnChange
+  scripts on it do not run when records are picked; Event runs them (see
+  [Reading the selection in form scripts](#reading-the-selection-in-form-scripts)). With Event, two copies
   of the field on one form can report a change twice or report one copy's part of the selection (after a pick refused
   at a new record's first save, also in the last OnChange), and a field that a business rule hides and shows again
   misses what changed meanwhile (a change saved, a pick refused, a removed last value that comes back): place the
   field once per form, and don't let a business rule hide it, when scripts rely on its OnChange.
+* **Saving with the record** (*Save the selection* set to With the record). It is not one transaction: the record's
+  save and the links are separate requests. The auto-save also saves the waiting picks. Until the save, subgrids and
+  the names that the names copy plug-in copies show the old links. Quick create forms are not supported, and with two
+  copies of the field on the form, changes are saved at once. With *Copy names into the host column* set to No,
+  removing every value can't show as an unsaved change, although it waits for the next save
+  ([Save the selection](#save-the-selection-with-the-record)). In apps with *Async save handler* on, after a new
+  record's first save that a handler cancelled without the control seeing it, the picks it carried don't count as an
+  unsaved change on their own; a change of the picks counts once that save has said nothing for 60 seconds
+  ([Write the links](#write-the-links-before-or-after-the-records-save)).
+* **Writing the links before the record is saved** (*Write the links* set to Before the record is saved). The form's
+  OnSave scripts run twice for such a save. In apps with *Async save handler* on, Before acts like After, and with
+  either value, a save whose only change is the selection still writes the links when a form script cancels it
+  ([Write the links](#write-the-links-before-or-after-the-records-save)).
 * **New records.** On new records opened in a dialog or side pane, and on new Appointment, Recurring Appointment and
   Service Activity records, the control shows "Save the record first" and records can be picked once the record is
-  saved. On quick create forms, which close when they are saved, the control cannot be used to pick. A required host
-  column is not required on those forms until the record is saved.
-* **List.** Only the related table's primary name is shown, sorted by name or in the sort order of the view or
-  complete query ([Sort order](#sort-order)). On tables with more than 500 matching records, search matches the start
-  of the name by default.
+  saved. On quick create forms, which close when they are saved, the control cannot be used to pick, so don't put the
+  field on them: there it can only show "Save the record first, then pick values here." A required host column is not
+  required on those forms until the record is saved.
+* **List.** Each option shows the related table's primary name and, with *Columns under each option*, up to three more
+  columns of the record. Rich text columns cannot be shown there, and a multiple lines of text column is read in full
+  for every record listed, so a long one makes the list slower to load
+  ([Columns under each option](#columns-under-each-option)). The list is sorted by name or in the sort order of the
+  view or complete query ([Sort order](#sort-order)). On tables with more than 500 matching records, search matches the
+  start of the name by default.
 * **Select all.** Offered only when every matching record is loaded and their number is within the Select all limit
   (500 at most). Each record is linked with its own request.
-* **Dialogs and side panes.** On saved records, changes are saved, but that form's subgrids are not refreshed or
-  hidden.
+* **Dialogs and side panes.** On saved records, changes are saved (at once, also with *Save the selection* set to With
+  the record), but that form's subgrids are not refreshed or hidden.
 * **Column security.** It makes the control read-only for users who may not update the host column; the control does
   not mask the linked records for users who may not read the column.
 * **Offline.** Read-only in the mobile app's offline mode.
@@ -1440,9 +1735,18 @@ without it, and it works next to the names copy plug-in.
 
 ## How it works
 
-* **Existing records**: each pick is saved immediately through the Web API (at most 4 requests at a time). Rapid
-  clicking is collapsed, so add → remove → add sends the minimum number of requests. A write that fails is **rolled
-  back** and explained under the field; the rest keep going.
+* **Existing records**: with *Save the selection* = At once (the default), each pick is saved immediately through the
+  Web API (at most 4 requests at a time). Rapid clicking is collapsed, so add → remove → add sends the minimum number of
+  requests. A write that fails is **rolled back** and explained under the field; the rest keep going.
+* **Saving with the record** (*Save the selection* = With the record): picks and removals wait in the field, and the
+  host column on the form holds their names as an unsaved change, so the form's own indicator, prompt and required
+  check see them. The control's own OnSave handler takes the waiting changes into the save; a save that another handler
+  cancels writes nothing. With *Write the links* = After the record is saved, the links are written once the save is
+  done, in the same way as above. With Before the record is saved, a handler that the control adds while the save runs
+  comes after every other OnSave handler of that save: when none of them cancelled it, it cancels the save, writes the
+  links, and then saves the record again with the same save mode. In apps with *Async save handler* on, and for the other
+  saves (the auto-save, leaving the record, a command, a script's save), the links follow the save as with After
+  ([Write the links](#write-the-links-before-or-after-the-records-save)).
 * **Maximum selections**: the limit counts the selected values and the records that may still end up saved: a
   removal on its way, an undone pick whose link is on its way, and a pick whose save failed in a way that may still
   have saved it, until the saved links are read again. Each copy of the field counts on its own
@@ -1450,6 +1754,7 @@ without it, and it works next to the names copy plug-in.
 * **Required host column**: on the form, the column holds the names of the saved values, never submitted, so a required
   column blocks saving until something is selected; the removal of the last value waits until another value is saved,
   and a removal that would leave one value reads the saved links first ([A required host column](#a-required-host-column)).
+  With *Save the selection* = With the record, the column holds the selection waiting for the save instead.
 * **New records**: picks are kept until the record's first successful save, then linked automatically (also with
   Save & Close). If the save is blocked (for example, a required field is empty), nothing is linked and the picks stay
   until the save succeeds. On a quick create form, on a new record opened in a dialog or side pane, and on new
@@ -1478,9 +1783,9 @@ without it, and it works next to the names copy plug-in.
   Select all appears only when every matching row is loaded and the count is within the Select all limit. When the
   list settings change while the form is open (a setting bound to a column), the list reloads, and a page still on its
   way for the old settings is dropped.
-* **Metadata**: relationship metadata (and a view's query, when one is set) is read once per page load and kept in
-  memory. If it turns out to be out of date (for example, the relationship was renamed), the control reads it again
-  once.
+* **Metadata**: relationship metadata (and a view's query, when one is set, and the columns under each option) is read
+  once per page load and kept in memory. If it turns out to be out of date (for example, the relationship was
+  renamed), the control reads it again once.
 * **Resilience**: requests that are throttled (honouring Retry-After), hit a gateway error or lose the connection are
   retried up to 3 times. Reads time out after 2 minutes; writes are given a little longer than the 2-minute plug-in
   limit and are never resent after a timeout. An error that would repeat (no permission, offline, server busy) stops
@@ -1490,14 +1795,15 @@ without it, and it works next to the names copy plug-in.
   read is tried again after 1, 3 and 9 seconds. Failures after the record was closed appear as an app notification.
   When the control cannot start because the server could not be reached, it tries again once after 30 seconds
   and when the connection comes back; a setting that cannot work is reported without retrying.
-* **Offline**: read-only with a note.
+* **Offline**: read-only.
 * **Leaving the page**: while a link (or the names copy) is still being saved, closing or reloading the browser tab asks
   for confirmation. Closing the record or hiding the field does not cancel queued writes. The names are written once
   the last link of a batch is saved (about 0.1–0.3 s after a single pick, up to many seconds after a Select all of
-  hundreds of records), and an update of the host column that is already on its way is finished by the browser
-  (`keepalive`). When the user leaves anyway (**Leave** in the browser's prompt), or the browser or app closes without
-  asking (a crash, the mobile app closed), the links already saved stay, but the host column can miss their names
-  until the record's links next change; the names copy plug-in does not fill them in ([Limitations](#limitations)).
+  hundreds of records). Link requests and an update of the host column that are already on their way are finished by
+  the browser (`keepalive`). When the user leaves anyway (**Leave** in the browser's prompt), or the browser or app
+  closes without asking (a crash, the mobile app closed), the links already saved stay, but the host column can miss
+  their names until the record's links next change; the names copy plug-in does not fill them in
+  ([Limitations](#limitations)).
 * **Safety**: names are rendered as text (no HTML injection). The control is read-only when the form or the field is
   read-only, or when column security does not let the user update the host column.
 * **Keyboard** (same as native): ↓ or Alt+↓ opens the list with the first row highlighted, Enter opens it or toggles
@@ -1520,15 +1826,17 @@ without it, and it works next to the names copy plug-in.
 | `control/NToNMultiSelect/index.ts` | Controller: settings, loading, saving, new-record handling, column security, the names copy writer |
 | `control/NToNMultiSelect/src/view.ts` | Rendering: the field, chips, list, quick create focus and keyboard handling |
 | `control/NToNMultiSelect/src/styles.ts` | CSS that matches the native multi-select look (injected by the bundle) |
-| `control/NToNMultiSelect/src/syncEngine.ts` | Turns picks into associate and disassociate requests (4 at a time, rollback on failure) and counts the places toward *Maximum selections* |
+| `control/NToNMultiSelect/src/syncEngine.ts` | Turns picks into associate and disassociate requests (4 at a time, rollback on failure), holds them for the record's save with *Save the selection* = With the record, and counts the places toward *Maximum selections* |
 | `control/NToNMultiSelect/src/relatedData.ts` | Web API calls that read and change the relationship, with the tag for the plug-in |
 | `control/NToNMultiSelect/src/fetchQuery.ts` | Builds the list's FetchXML from *Records from view* and *FetchXML filter* |
-| `control/NToNMultiSelect/src/metadata.ts` | Resolves tables, columns and navigation properties from the relationship name; finds system views |
-| `control/NToNMultiSelect/src/formBridge.ts` | Form integration: subgrid refresh and hiding, OnPostSave for new records |
+| `control/NToNMultiSelect/src/metadata.ts` | Resolves tables, columns and navigation properties from the relationship name; finds system views and the columns under each option |
+| `control/NToNMultiSelect/src/formBridge.ts` | Form integration: subgrid refresh and hiding, OnPostSave for new records, and the record's saves with *Save the selection* = With the record |
+| `control/NToNMultiSelect/src/hostField.ts` | The host column on the form: the names shown there, its OnChange with *Selection on the form* = Event, and its unsaved changes with *Save the selection* = With the record |
 | `control/NToNMultiSelect/src/namesCopy.ts` | *Copy names into the host column*: the text, the read of the saved links and the ordered updates of the record |
 | `control/NToNMultiSelect/src/dataverse.ts` | Small Web API client (retries, timeouts, throttling) and error messages |
 | `control/NToNMultiSelect/src/strings.ts` | All user-facing text, in English and French |
 | `control/NToNMultiSelect/src/types.ts` | Shared types and helpers |
+| `control/NToNMultiSelect/src/text.ts` | Text helpers: cutting a text without breaking a character, and text on one line |
 | `formloader/formloader.js` | Optional form library (see [Form library](#form-library-optional)) |
 | `solution/` | Dataverse solution project: publisher, version and the form library web resource |
 | `plugin/NamesCopy/` | The names copy plug-in: `NamesCopyPlugin.cs` (the Associate and Disassociate steps, and the Delete and Update steps that the steps page creates), `NamesCopyHelpers.cs` (reading the form settings, the names text) and `NamesCopy.csproj`. Its strong-name key `NamesCopy.snk` is not committed: the first build of `scripts/build-with-plugin.mjs` creates it. Keep that file ([The signing key](#the-signing-key)) |
@@ -1606,10 +1914,12 @@ generated solution project, so any key works. The released packages are signed w
 
 * **Keep that file.** An environment that has the plug-in only takes an update signed with the same key.
 * A build signed with your own key has another identity than the released plug-in. To switch an environment from the
-  released plug-in to your own build, remove the released one first (see *Removing the plug-in and keeping the
-  control* under [Turning steps off](#turning-steps-off)), or keep using the released packages.
+  released plug-in to your own build, remove the released one first (unmanaged: see *Removing the plug-in and keeping
+  the control* under [Turning steps off](#turning-steps-off); managed: uninstalling `NToNMultiSelectWithPlugin` removes
+  the control too, see [Uninstall](#uninstall)), or keep using the released packages.
 * Signing gives the assembly an identity, not security: anyone could build a plug-in with a key of their own, but
-  only administrators and customizers can import solutions.
+  only System Administrators can import a solution that contains one (the default System Customizer role cannot
+  create plug-in assemblies).
 
 To change the control or the plug-in, see the [developer guide](docs/developer-guide.md).
 

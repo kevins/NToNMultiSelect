@@ -1,12 +1,12 @@
 import { IInputs, IOutputs } from "./generated/ManifestTypes";
 import { DataverseClient, DataverseError, TimeoutError, friendlyError, isNetworkError, isPermissionError, isServerBusy } from "./src/dataverse";
-import { FormBridge } from "./src/formBridge";
-import { HostField, currentPage } from "./src/hostField";
+import { FormBridge, SaveEventArgs, saveEventArgs } from "./src/formBridge";
+import { HostField, SubmitMode, XrmPage, currentPage } from "./src/hostField";
 import { resolveRelationship } from "./src/metadata";
-import { CopyWriter, NamesCopy, namesCopyFor, namesText } from "./src/namesCopy";
-import { CLIENT_MODE_LIMIT, OptionsQuery, RelatedData, SERVER_PAGE_SIZE, isSearchable, linkTag } from "./src/relatedData";
+import { COMMA_SEPARATOR, CopyWriter, NamesCopy, SEPARATOR, namesCopyFor, namesText } from "./src/namesCopy";
+import { CLIENT_MODE_LIMIT, ListColumnsSetting, OptionsQuery, RelatedData, SERVER_PAGE_SIZE, isSearchable, linkTag } from "./src/relatedData";
 import { Strings, stringsFor } from "./src/strings";
-import { SyncEngine } from "./src/syncEngine";
+import { LinkChange, SyncEngine } from "./src/syncEngine";
 import { Item, OptionsMode, RelationshipInfo, compareItems, isGuid, normalizeId } from "./src/types";
 import { MultiSelectView, OptionsStatus } from "./src/view";
 
@@ -24,6 +24,111 @@ const LOAD_RETRY_DELAYS_MS = [1000, 3000, 9000];
 const INIT_RETRY_DELAY_MS = 30_000;
 /** Tables whose new-record save skips OnSave/PostSave (Microsoft docs), so picks can't wait for the first save. */
 const NO_POST_SAVE_TABLES = ["appointment", "recurringappointmentmaster", "serviceappointment"];
+/** A save that carries held changes reports within this time, or they count as unsaved again (see onHeldSave). */
+const SAVE_REPORT_MS = 60_000;
+/**
+ * "Write the links" = Before: whether a save with `saveMode` (getSaveMode) can wait for the links and then be made
+ * again. Only the user's own save commands can: Save (1, its button or Ctrl+S), Save & Close (2) and Save & New (59),
+ * each known by the click or key that started it (see watchUserSaves). Any other save goes ahead, and the links are
+ * written right after it, as with After:
+ * - a save a script starts (formContext.data.save(), whatever save mode it passes: the mode only describes the save,
+ *   and the script waits for the save to go on, to close the form or call an action);
+ * - the auto-save (70), which a script's save with that mode can't be told apart from (owner, 2026-11-06);
+ * - a save the form makes because the user leaves the record (auto-save when leaving, also mode 2; "Save and continue"
+ *   in the form's prompt): cancelling it shows the form's "Unsaved changes" prompt for a moment and loses where the
+ *   user was going (measured live);
+ * - a command's save (Deactivate, Assign, Mark complete, Send...), which the control couldn't make again.
+ * Decided once per save: the first field of the form whose handler asks (`asker`, its HoldState) uses up the user's click
+ * or key, and the other fields of the form get the same answer for that save (see saveDecision). A field that asks again
+ * asks for another save.
+ */
+function savesBefore(saveMode: number, asker: object): boolean {
+    if (saveDecision?.saveMode === saveMode && !saveDecision.askers.has(asker)) {
+        saveDecision.askers.add(asker);
+        return saveDecision.before;
+    }
+    let active: Element | null = null;
+    try {
+        active = document.activeElement;
+    } catch {
+        // No document: not in a browser.
+    }
+    const intent = userSave;
+    // The form's prompt ("Save and continue") is a dialog.
+    const inDialog = !!active?.closest?.('[role="dialog"], [role="alertdialog"]');
+    const kind = USER_SAVE_MODES[saveMode];
+    const before = !inDialog && !!kind && intent?.kind === kind && Date.now() - intent.at < USER_SAVE_MS;
+    // Used up: a save a script starts after it (even with the focus still on the Save button) goes ahead.
+    if (before) userSave = null;
+    const decision = { saveMode, before, askers: new Set([asker]) };
+    saveDecision = decision;
+    // Every OnSave handler of a save runs before this (measured live: they run one after the other, at once).
+    setTimeout(() => {
+        if (saveDecision === decision) saveDecision = null;
+    }, 0);
+    return before;
+}
+
+/** The user's save commands (see watchUserSaves), by the save mode their save has. */
+type UserSaveKind = "save" | "saveAndClose" | "saveAndNew";
+const USER_SAVE_MODES: Record<number, UserSaveKind | undefined> = { 1: "save", 2: "saveAndClose", 59: "saveAndNew" };
+/** A save starts this soon after the user's click or key that started it (it starts within milliseconds, measured). */
+const USER_SAVE_MS = 2000;
+/** The user's last save command, until a save uses it up, the user does something else, or USER_SAVE_MS passes. */
+let userSave: { kind: UserSaveKind; at: number } | null = null;
+interface SaveDecision {
+    saveMode: number;
+    before: boolean;
+    askers: Set<object>;
+}
+/** The answer of savesBefore for the save whose OnSave handlers are running, and the fields that asked it. */
+let saveDecision: SaveDecision | null = null;
+let watchingUserSaves = false;
+
+/**
+ * The save command a click or a key of the user is, if any: the command bar's Save, Save & Close or Save & New (by
+ * their data-id, measured live), or Ctrl+S. (A click on the save status in the form's header doesn't save, measured.)
+ */
+function userSaveKind(event: Event): UserSaveKind | null {
+    const key = event as KeyboardEvent;
+    if (event.type === "keydown") {
+        if ((key.ctrlKey || key.metaKey) && !key.altKey && typeof key.key === "string" && key.key.toLowerCase() === "s") return "save";
+        // Enter or Space on a command button that has the focus (the button's own click follows).
+        if (key.key !== "Enter" && key.key !== " ") return null;
+    }
+    let target: Element | null = null;
+    try {
+        target = (event.target as Element | null)?.closest?.("[data-id]") ?? null;
+    } catch {
+        // Not an element.
+    }
+    // Only the command bar's own buttons, "<table>|NoRelationship|Form|Mscrm.Form.<table>.Save" (measured live): the
+    // button of a custom command whose id merely holds these words starts a script's save, which goes ahead (safety
+    // review C5).
+    const command = /(?:^|\|)Mscrm\.Form\.[^.|]+\.(SaveAndClose|SaveAndNew|Save)\b/.exec(target?.getAttribute("data-id") ?? "")?.[1];
+    if (command === "SaveAndClose") return "saveAndClose";
+    if (command === "SaveAndNew") return "saveAndNew";
+    if (command === "Save") return "save";
+    return null;
+}
+
+/**
+ * Notes the user's save commands, for savesBefore: once for the page, on the window, before the page's own handlers of
+ * the same event can stop it. Nothing is changed or stopped. Any other click or key forgets a command not used yet.
+ */
+function watchUserSaves(): void {
+    if (watchingUserSaves) return;
+    watchingUserSaves = true;
+    try {
+        const note = (event: Event) => {
+            const kind = userSaveKind(event);
+            userSave = kind ? { kind, at: Date.now() } : null;
+        };
+        for (const type of ["click", "keydown"]) window.addEventListener(type, note, true);
+    } catch {
+        // No window: not in a browser.
+    }
+}
 
 interface Config {
     relationshipName: string;
@@ -38,6 +143,8 @@ interface Config {
     hideSubgrids: boolean;
     placeholder: string;
     writeSummary: boolean;
+    /** "Names separator": between the names in the host column, "; " (default) or ", " (see namesSeparator). */
+    namesSeparator: string;
     allowCreate: boolean;
     showSelectAll: boolean;
     /** 1..CLIENT_MODE_LIMIT (the setting's 0 is turned into CLIENT_MODE_LIMIT). */
@@ -48,16 +155,79 @@ interface Config {
     openOnClick: boolean;
     /** Each selected value is a link that opens its record in a new tab. */
     openRecords: boolean;
+    /**
+     * "Load the list": "atFormLoad" (default) loads the records that can be picked in the background as the form opens,
+     * so the list opens at once; "whenOpened" waits until the list is opened or the user types (see warmOptions).
+     */
+    loadList: "atFormLoad" | "whenOpened";
     /** "Selection on the form": what the form is told about the selection, through the host column (see syncHost). */
     formSelection: FormSelection;
+    /** "Save the selection": each change at once, or held until the record is saved (see holdsWrites). */
+    saveMode: SaveMode;
+    /** "Write the links": with saveMode "withRecord", after the record's save or before it (see onFormSave). */
+    linkTiming: LinkTiming;
+    /** "Columns under each option", "Columns to show" and "Search the columns under each option". */
+    listColumns: ListColumnsSetting;
 }
 
 type FormSelection = "no" | "event";
 const FORM_SELECTIONS: Record<string, FormSelection> = { "1": "event" };
+type SaveMode = "atOnce" | "withRecord";
+const SAVE_MODES: Record<string, SaveMode> = { "1": "withRecord" };
+type LinkTiming = "after" | "before";
+const LINK_TIMINGS: Record<string, LinkTiming> = { "1": "before" };
+const LIST_COLUMN_SOURCES: Record<string, ListColumnsSetting["source"]> = { "1": "typed", "2": "view" };
 
 interface ContextInfo {
     entityId?: string;
     entityTypeName?: string;
+}
+
+/**
+ * "Save the selection" = With the record: the changes held for a saved record's save (see SyncEngine.hold), and what
+ * its saves do with them. The instance showing the record keeps it; when the instance goes while a save that carries
+ * changes is under way (Save & Close, or auto-save when leaving), it is kept until that save is done.
+ */
+interface HoldState {
+    engine: SyncEngine;
+    bridge: FormBridge;
+    recordId: string;
+    host: HostField;
+    timing: LinkTiming;
+    /**
+     * "Copy names into the host column" = Yes: the record's save stores the names with it (they are what the column is
+     * kept for), so the form compares the column with the saved names afterwards and any later change shows as unsaved.
+     * Otherwise the column is never saved by the form (see onHeldSave).
+     */
+    savesNames: boolean;
+    /**
+     * The save under way (its OnSave ran) and the changes it carries, until its OnPostSave or, when the form has
+     * nothing else to send, until just after OnSave: it then sends nothing and reports no OnPostSave. `keepOne`: the
+     * column was required then (see SyncEngine.release). `names`: what the column held then, if the save stores it.
+     */
+    saving: { changes: Map<string, LinkChange>; keepOne: boolean; names?: string | null; timer: ReturnType<typeof setTimeout> } | null;
+    /**
+     * With the app's "Async save handler" on: a save that hadn't reported after SAVE_REPORT_MS, still perhaps waiting
+     * for the promise of another OnSave handler (a dialog left open). Its OnPostSave, if it comes, still writes what it
+     * carried; meanwhile the column stays out of it (see saveNotReported, syncHost).
+     */
+    lateSaving?: NonNullable<HoldState["saving"]>;
+    /**
+     * "Write the links" = Before the record is saved: the save cancelled while the control checks that no handler cancels
+     * it and its links are written, with the other fields of the form whose changes it carries (see BeforeRound).
+     */
+    before: BeforeRound | null;
+    /** The next OnSave is the save the control made again once the links were written: it goes ahead. */
+    pass: boolean;
+    /** The names that save carried (see savesNames), once its OnSave has run. */
+    passNames?: string | null;
+    /**
+     * The names the record's last save stored (see savesNames), until the links it carried are written: if the links
+     * end up otherwise (a change undone while the save was on its way, a refused link), the names copy puts them right.
+     */
+    storedNames?: string | null;
+    /** The instance holding the changes; null once it is gone (see retireEngine). */
+    owner: NToNMultiSelect | null;
 }
 
 interface OpenFormResult {
@@ -93,12 +263,90 @@ interface Detached {
     /** A write failed in a way that may still have saved it (see mayHaveSaved): the copy then reads the saved links. */
     unknown: boolean;
     /**
+     * "Save the selection" = With the record: the record's save stored the names the form showed, so once the links are
+     * written the copy checks them against the links saved on the server (see onSettled).
+     */
+    namesStored?: boolean;
+    /**
      * "Copy names into the host column", or null when it's off. It was set up with the record's table, the host
      * column and its length while the control was still there.
      */
     copy: HostCopy | null;
+    /** With the record: the instance's held changes, kept for a save under way (see letGoOfHeld, parkLate). */
+    kept?: HoldState;
 }
 const detached = new Map<SyncEngine, Detached>();
+
+/** A With the record field whose changes wait for a save of its form, as its OnSave handler saw that save. */
+interface HeldSaveMember {
+    control: NToNMultiSelect;
+    state: HoldState;
+    saving: NonNullable<HoldState["saving"]>;
+    args: SaveEventArgs;
+    /** The form had nothing left to send once this field's handler had run. */
+    sendsNothing: boolean;
+}
+/** The fields whose changes wait for the save under way, by the form's entity (see onHeldSave). */
+const heldSaves = new Map<object, HeldSaveMember[]>();
+
+/**
+ * "Write the links" = Before the record is saved: a save of a form whose With the record fields write their links first
+ * (see onHeldSave). A handler that a script added to OnSave after a field's last change runs after that field's handler,
+ * and can still cancel the save. So the first field of the save adds a handler of its own, which runs after the other
+ * handlers of that save (measured live: a handler added while a save's handlers run runs in that save, after them). Only
+ * there is it known whether one of them cancelled the save: if none did, that handler cancels it, the fields' links are
+ * written, then the save is made again (see lastWord, finishBefore); if one did, nothing is written. The limit: a
+ * handler that another handler adds to OnSave during the same save, after this one was added, runs after it, so its
+ * cancel comes once the links are on their way. Handlers registered when the form loads, or added before the save, are
+ * all seen.
+ */
+interface BeforeRound {
+    /** The form's entity (see FormBridge.followedEntity). */
+    key: object;
+    /** The mode of the save to make again: Save, Save & Close, Save & New, auto-save. */
+    saveMode: number;
+    /** Collecting the fields of the save (its OnSave handlers), then writing their links. */
+    phase: "collecting" | "writing";
+    members: BeforeMember[];
+    /** Takes the round's handler (see lastWord) off the form again, once the save's handlers have run. */
+    removeLast: (() => void) | null;
+    /** While writing: the fields whose links are still being written, those whose writes failed, and whether any did. */
+    pending: Set<HoldState>;
+    failedMembers: Set<HoldState>;
+    failed: boolean;
+    /** While writing: a save of the user's that the round may take (see absorb), until its handlers have all run. */
+    absorbing: AbsorbedSave | null;
+    /**
+     * The save the round took last (see take), as savesBefore decided it for the fields: a Before field whose handler
+     * runs later in that save joins at once (see absorb). That happens on a client that can't add the round's handler
+     * during the save, where the round decides at once.
+     */
+    taken: SaveDecision | null;
+}
+
+/**
+ * The user's save command while a round writes its links (see onHeldSave): the Save & Close or Save & New it asks for,
+ * and the Before fields of the form whose changes it would add to the round. The round's handler for that save decides,
+ * after the other handlers of the save (see absorbSave): taken (cancelled, and made again by the round) only when none
+ * of them cancelled it.
+ */
+interface AbsorbedSave {
+    mode?: number;
+    joiners: BeforeMember[];
+    /** The round's handler for that save, taken off once the save's handlers have run (see afterAbsorbing). */
+    remove: (() => void) | null;
+    /** The event arguments of the first field that saw that save (see afterAbsorbing). */
+    args: SaveEventArgs;
+}
+interface BeforeMember {
+    control: NToNMultiSelect;
+    state: HoldState;
+    /** The changes the save carries, and whether the column was required then (see SyncEngine.release). */
+    changes: Map<string, LinkChange>;
+    keepOne: boolean;
+}
+/** The rounds under way, by the form's entity. */
+const beforeRounds = new Map<object, BeforeRound>();
 
 /**
  * Picks made on an unsaved record by a control instance that was destroyed while the form stayed open (for example
@@ -108,9 +356,16 @@ const detached = new Map<SyncEngine, Detached>();
 interface Orphan {
     engine: SyncEngine;
     bridge: FormBridge;
+    /**
+     * Until when the form's first save under way counts as under way (see newSaveDeadline), as its instance noted it, or
+     * as its own OnSave handler did for a save that started after the instance went (see onNewRecordSave); 0 for none.
+     */
+    saveDeadline: number;
     release(): void;
 }
 const orphans = new WeakMap<object, Map<string, Orphan>>();
+/** The orphan an engine belongs to (see onNewRecordSave). */
+const orphanOf = new WeakMap<SyncEngine, Orphan>();
 
 /**
  * Engines with links still to write or being written. While any of them has work left, leaving the page (closing
@@ -252,8 +507,31 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     private data: RelatedData | null = null;
     private engine: SyncEngine | null = null;
     private bridge: FormBridge | null = null;
+    /**
+     * window.Xrm when the control was made, that of its own form: the host column and every bridge read the form from it,
+     * as window.Xrm is that of a dialog or quick create form while one is on top (see HostField, FormBridge).
+     */
+    private xrmPage: XrmPage | null = null;
     /** The host column on the control's own form (see syncHost). */
     private hostField: HostField | null = null;
+    /** "Save the selection" = With the record, on a saved record whose saves are followed (see startHolding). */
+    private hold: HoldState | null = null;
+    /** A save stored the names while changes waited for it, and holding stopped before its links were written (see stopHolding). */
+    private checkNamesLater = false;
+    /** The warning that the host column is the record's own name was given (see copiesNames). */
+    private warnedNameColumn = false;
+    /**
+     * With the record: a new record's save is under way (its OnSave ran), so the column isn't an unsaved change (see
+     * onNewRecordSave).
+     */
+    private newSaveInFlight = false;
+    /** Until when the new record's save under way counts as under way (see followNewRecordSave). */
+    private newSaveDeadline = 0;
+    /** The new record's latest save (see onNewRecordSave): the checks of an earlier one leave it alone. */
+    private newSaveAttempt = 0;
+    private newSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    /** With the record: the control wasn't on the page yet when the saved record's saves were to be followed. */
+    private holdWhenPlaced = false;
     /**
      * The record ("" for a new one) whose names syncHost last worked out, those names and their records (sorted ids): a
      * later difference of the records is a change.
@@ -270,6 +548,11 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     private mode: OptionsMode | null = null;
     private allOptions: Item[] = [];
     private allOptionsKeys: string[] = [];
+    /**
+     * "Columns under each option" found columns to show for the list (null: not loaded yet). Without any, the list looks
+     * as with None (see render).
+     */
+    private columnsFound: boolean | null = null;
     private baseOptions: Item[] = [];
     private baseNext: string | null = null;
     private shownOptions: Item[] = [];
@@ -387,6 +670,11 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         this.render();
     };
 
+    constructor() {
+        // A later copy of this bundle on the page makes its instances with the first copy's class (see firstCopy).
+        if (firstCopy) return new firstCopy();
+    }
+
     public init(context: ComponentFramework.Context<IInputs>, _notifyOutputChanged: () => void, _state: ComponentFramework.Dictionary, container: HTMLDivElement): void {
         this.context = context;
         this.t = stringsFor(context.userSettings?.languageId);
@@ -413,9 +701,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         window.addEventListener("online", this.onOnline);
         liveControls.add(this);
         // Now, while window.Xrm is that of the control's own form (see HostField).
+        this.xrmPage = currentPage();
         const host = (context.parameters.value as unknown as { attributes?: { LogicalName?: string } })?.attributes?.LogicalName;
         const table = (this.contextInfo(context).entityTypeName ?? "").toLowerCase();
-        this.hostField = host && table ? new HostField(currentPage(), table, host) : null;
+        this.hostField = host && table ? new HostField(this.xrmPage, table, host) : null;
         this.applyConfig(context);
         this.render();
     }
@@ -454,6 +743,12 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 return;
             }
         }
+        if (this.holdWhenPlaced && this.view.element().isConnected && this.engine && this.bridge) {
+            // With the record: the control is on the page now, so its record's saves can be followed.
+            this.holdWhenPlaced = false;
+            const recordId = this.engine.getRecordId();
+            if (recordId) this.startHolding(this.engine, this.bridge, recordId);
+        }
         // Grids can register after the control, so both are applied again on every update.
         const linkedRecordId = this.engine?.getRecordId() ?? null;
         this.applyHideSubgrids(linkedRecordId);
@@ -476,6 +771,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         clearTimeout(this.loadRetryTimer);
         clearTimeout(this.initRetryTimer);
         clearTimeout(this.subgridTimer);
+        clearTimeout(this.newSaveTimer);
         this.searchAbort?.abort();
         window.removeEventListener("online", this.onOnline);
         liveControls.delete(this);
@@ -501,6 +797,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             hideSubgrids: String(p.hideSubgrids?.raw ?? "0") === "1",
             placeholder: (p.placeholder?.raw ?? "").trim() || this.t.placeholder,
             writeSummary: String(p.writeSummary?.raw ?? "0") === "1",
+            namesSeparator: String(p.namesSeparator?.raw ?? "0") === "1" ? COMMA_SEPARATOR : SEPARATOR,
             allowCreate: String(p.allowCreate?.raw ?? "0") === "1",
             showSelectAll: String(p.showSelectAll?.raw ?? "1") !== "0",
             // 0 means "as many as the list holds"; nothing above that is ever offered.
@@ -509,15 +806,29 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             searchMode: String(p.searchMode?.raw ?? "0") === "1" ? "contains" : "startswith",
             openOnClick: String(p.openOnClick?.raw ?? "0") === "1",
             openRecords: String(p.openRecords?.raw ?? "0") === "1",
+            loadList: String((p as unknown as { loadList?: { raw?: unknown } }).loadList?.raw ?? "0") === "1" ? "whenOpened" : "atFormLoad",
             formSelection: FORM_SELECTIONS[String(p.formSelection?.raw ?? "0")] ?? "no",
+            saveMode: SAVE_MODES[String((p as unknown as { saveMode?: { raw?: unknown } }).saveMode?.raw ?? "0")] ?? "atOnce",
+            linkTiming: LINK_TIMINGS[String((p as unknown as { linkTiming?: { raw?: unknown } }).linkTiming?.raw ?? "0")] ?? "after",
+            listColumns: this.readListColumns(p as unknown as Partial<Record<"listColumns" | "listColumnNames" | "searchListColumns", { raw?: unknown }>>),
         };
+    }
+
+    /** "Columns under each option" (None by default: the names only, as today), the typed names and the search switch. */
+    private readListColumns(p: Partial<Record<"listColumns" | "listColumnNames" | "searchListColumns", { raw?: unknown }>>): ListColumnsSetting {
+        const source = LIST_COLUMN_SOURCES[String(p.listColumns?.raw ?? "0")] ?? "none";
+        const names = String(p.listColumnNames?.raw ?? "")
+            .split(/[,;]/)
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean);
+        return { source, names: source === "typed" ? names : [], search: source !== "none" && String(p.searchListColumns?.raw ?? "0") === "1" };
     }
 
     private applyConfig(context: ComponentFramework.Context<IInputs>): void {
         const config = this.readConfig(context);
         this.config = config;
         const relationshipKey = config.relationshipName.toLowerCase();
-        const optionsKey = JSON.stringify([config.filter, config.view, config.fetchXml, config.showInactive, config.searchMode]);
+        const optionsKey = JSON.stringify([config.filter, config.view, config.fetchXml, config.showInactive, config.searchMode, config.listColumns]);
         const subgridsKey = config.subgrids.join(",");
         if (relationshipKey !== this.relationshipKey) {
             this.relationshipKey = relationshipKey;
@@ -596,10 +907,15 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         this.batchErrors = 0;
         this.batchUnknown = false;
         this.resyncRetries = 0;
-        this.loadedCopy = context.parameters.value?.raw || null;
+        // A new record's create never sends the column (see onNewRecordSave): nothing is stored there yet, whatever the
+        // form shows (an instance made again on an unsaved form finds the picks' names there, see adoptOrphan).
+        this.loadedCopy = this.recordIdFrom(context) ? context.parameters.value?.raw || null : null;
         // Another record: its first names are no change, also after a new record the form didn't save (see syncHost).
         if ((this.recordIdFrom(context) ?? "") !== previous) this.hostSyncedFor = null;
         this.hostWaited = false;
+        this.newSaveInFlight = false;
+        clearTimeout(this.newSaveTimer);
+        this.holdWhenPlaced = false;
         this.recordBase = null;
         clearTimeout(this.loadRetryTimer);
         clearTimeout(this.initRetryTimer);
@@ -628,11 +944,16 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             this.initRetried = false;
             this.rel = rel;
             const data = (this.data = new RelatedData(client, rel, this.t.noName));
-            const bridge = new FormBridge(entityName, rel.schemaName, config.subgrids, this.view.element(), rel.selfReferencing ? rel.navigationProperty : null, this.hiddenGrids);
+            // The form is read from the control's own page, also when a bridge is made later on, while a dialog or a quick
+            // create form of the same table is on top (a slow first load, the retry after a passing problem, reconnecting).
+            const bridge = new FormBridge(entityName, rel.schemaName, config.subgrids, this.view.element(), rel.selfReferencing ? rel.navigationProperty : null, this.hiddenGrids, this.xrmPage);
             const engine: SyncEngine = new SyncEngine(
                 {
                     associate: (recordId, targetId) => data.associate(recordId, targetId, this.linkTag(rel, recordId)),
                     disassociate: (recordId, targetId) => data.disassociate(recordId, targetId, this.linkTag(rel, recordId)),
+                    // With the record, a required column's save that leaves it one saved value reads the links first (see
+                    // SyncEngine.release), with the same read as At once's check (see holdBackLast).
+                    readSaved: (recordId) => data.loadSelected(recordId),
                 },
                 {
                     onChange: () => {
@@ -640,6 +961,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                     },
                     onSettled: (changed) => this.onSettled(engine, changed),
                     onError: (item, operation, error) => this.onWriteError(engine, item, operation, error),
+                    // With the record, on a passing problem the change waits for the next save; not once the instance is
+                    // gone, since nothing could save it then.
+                    holdsAfterError: (error) => engine === this.engine && !this.destroyed && isTransient(error),
+                    onCheckFailed: (changes, error) => this.onCheckFailed(engine, changes, error),
                 },
             );
             this.engine = engine;
@@ -654,7 +979,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             if (recordId) {
                 engine.setRecordId(recordId);
                 this.releaseAbandonedOrphan(bridge, recordId);
-                if (config.writeSummary) {
+                if (this.copiesNames(rel)) {
                     // Join the record's copy now, with the value the form loaded. Another instance on the record (a copy
                     // of the field in the header) may write it before this one changes anything; joining only then
                     // would take that write for a change made elsewhere and write the same names again (NamesCopy.seen).
@@ -684,6 +1009,12 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                     this.render();
                     return;
                 }
+                if (config.saveMode === "withRecord") {
+                    // Once the control is placed, the form it is on is known (see startHolding).
+                    await bridge.waitUntilPlaced();
+                    if (token !== this.initToken) return;
+                    this.startHolding(engine, bridge, recordId);
+                }
             } else if (NO_POST_SAVE_TABLES.includes(entityName)) {
                 this.saveFirst = true;
             } else {
@@ -695,7 +1026,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                     return;
                 }
                 const schemaName = rel.schemaName;
-                if (!bridge.onPostSave((id) => this.onRecordSaved(engine, bridge, id, schemaName, data))) {
+                const saveEvents = { onSave: (args: SaveEventArgs) => this.onNewRecordSave(engine, args), onFailed: () => this.onNewRecordSaveFailed(engine) };
+                if (!bridge.onPostSave((id) => this.onRecordSaved(engine, bridge, id, schemaName, data), saveEvents)) {
                     // Without a save event (quick create, or a form that can't be identified) picked values could not
                     // be linked.
                     this.saveFirst = true;
@@ -731,9 +1063,13 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         }, INIT_RETRY_DELAY_MS);
     }
 
-    /** Loads the list in the background so the first open is instant (not for read-only or offline controls). */
+    /**
+     * Loads the list in the background so the first open is instant (not for read-only or offline controls). With "Load
+     * the list" = When the list is first opened, nothing is loaded now: opening the list or typing in the box loads it
+     * (see ensureOptions), so a form on which nobody picks sends no list request.
+     */
     private warmOptions(token: number): void {
-        if (this.saveFirst || this.offline || this.readOnly()) return;
+        if (this.saveFirst || this.offline || this.readOnly() || this.config?.loadList === "whenOpened") return;
         setTimeout(() => {
             if (token === this.initToken && !this.destroyed) void this.ensureOptions();
         }, 50);
@@ -741,8 +1077,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
 
     /**
      * Lets the current engine go. If it still has changes to write, or writes on their way, for a saved record, it
-     * keeps running on its own (see Detached). Unsaved picks on a new record become an orphan the next instance can
-     * adopt, unless `discardHeld` is set (the control has moved on to another record, so they must not follow).
+     * keeps running on its own (see Detached), and so does one whose save's changes still wait for the read of the saved
+     * links (see SyncEngine.release), even when the user has undone them since. Unsaved picks on a new record become an
+     * orphan the next instance can adopt, unless `discardHeld` is set (the control has moved on to another record, so
+     * they must not follow).
      */
     private retireEngine(discardHeld = false): void {
         this.handOverHeld();
@@ -755,7 +1093,34 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         this.copy = null;
         if (!engine || !bridge) return;
         bridge.unwatchSubgrids();
-        if (!engine.hasPendingChanges() && !engine.isBusy()) {
+        const hold = this.hold;
+        this.hold = null;
+        const own = hold?.engine === engine ? hold : null;
+        // With the record: a save under way (or that reported late) carries changes of this field. Its OnPostSave writes
+        // them and stores names that the copy checks, also when the changes were undone since (see onHeldPostSave): the
+        // engine stays for it, kept (see letGoOfHeld, dropKept; safety review of the S01 fix).
+        const savePending = !!own && !!(own.saving ?? own.lateSaving);
+        // Names an earlier save stored, whose check waited for changes this field lets go of now (see onSettled).
+        const namesOwed = own?.storedNames !== undefined;
+        // Write the links = Before: this field's links were written for a round that ends now without its save made again
+        // (see letGoOfHeld), which would have stored their names (see onSettled): the copy writes them, as abandonRound
+        // does for the fields that stay (links still on their way: see finishDetached).
+        const roundNames = !!own?.before && own.before.phase === "writing" && own.savesNames && !own.before.failedMembers.has(own);
+        if (own) this.letGoOfHeld(own);
+        // (On a new record, what its first save under way carries counts too, even a pick undone since: see adoptOrphan.)
+        // With the record, the released work counts too: the read of the saved links before a required column's last
+        // removals, also when those were undone since (a rule hid the field meanwhile). Once it is answered, the copy
+        // checks the names that save stored against the saved links (see finishDetached), as it would for this instance
+        // (re-audit S01).
+        if (!savePending && !engine.hasPendingChanges() && !engine.isBusy() && !engine.hasReleasedWork() && engine.carriedByCreate().length === 0) {
+            // Nothing is left to write, but the check of names a save stored is still due (it waited for changes let go of
+            // now), or a Before round's names are no save's any more: the copy makes the check, or writes them.
+            const recordId = engine.getRecordId();
+            if ((namesOwed || roundNames) && recordId && this.copiesNames()) {
+                const names = copy ?? this.startCopy(recordId, this.recordKey(recordId), this.data);
+                if (namesOwed) names?.names.refresh(names.writer, true);
+                else names?.names.update(engine.selected(), names.writer);
+            }
             liveEngines.delete(engine);
             engine.dispose();
             bridge.dispose();
@@ -763,8 +1128,8 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         }
         const recordId = engine.getRecordId();
         if (recordId) {
-            // Writes are queued or running (e.g. the user closed the record right after Select all): let them finish,
-            // and the host column copy after them.
+            // Writes are queued or running (e.g. the user closed the record right after Select all), or a save's changes
+            // wait for the read of the saved links: let them finish, and the host column copy after them.
             const key = this.recordKey(recordId);
             detached.set(engine, {
                 key,
@@ -775,7 +1140,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 firstError: "",
                 // A write of the batch that failed but may have been saved: the copy reads the saved links at the end.
                 unknown: this.batchUnknown,
-                copy: this.config?.writeSummary ? (copy ?? this.startCopy(recordId, key, this.data)) : null,
+                namesStored: namesOwed,
+                kept: own ?? undefined,
+                copy: this.copiesNames() ? (copy ?? this.startCopy(recordId, key, this.data)) : null,
             });
             this.batchUnknown = false;
             return;
@@ -806,6 +1173,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         const orphan: Orphan = {
             engine,
             bridge,
+            saveDeadline: this.newSaveInFlight ? this.newSaveDeadline : 0,
             release: () => {
                 if (byKey.get(key) === orphan) byKey.delete(key);
                 liveEngines.delete(engine);
@@ -814,6 +1182,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             },
         };
         byKey.set(key, orphan);
+        orphanOf.set(engine, orphan);
     }
 
     /** Relationship plus host column, so two controls for the same relationship on one form never mix their picks. */
@@ -832,15 +1201,33 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         if (orphan && !orphan.engine.getRecordId() && !orphan.bridge.savedAs(recordId)) orphan.release();
     }
 
-    /** Takes over picks left by a previous instance of this control on the same unsaved form (see `orphans`). */
+    /**
+     * Takes over picks left by a previous instance of this control on the same unsaved form (see `orphans`), and the
+     * form's first save if it is still under way (the field was made again during it: a rule or a script hid and showed
+     * it). This instance then follows that save as if it had started it, and links the picks once the record exists;
+     * without it, the record's id would look like another record's and the picks would be let go (fifth audit).
+     */
     private adoptOrphan(): void {
         const entity = this.bridge?.trackedEntity();
-        if (!entity || !this.rel || !this.engine) return;
+        if (!entity || !this.rel || !this.engine || !this.bridge) return;
         const orphan = orphans.get(entity)?.get(this.orphanKey());
         if (!orphan || orphan.engine.getRecordId()) return;
         const picks = orphan.engine.selected();
+        const carried = orphan.engine.carriedByCreate();
+        const saving = this.bridge.takeOverSave(orphan.bridge);
         orphan.release();
-        if (picks.length) this.engine.setMany(picks, true);
+        if (saving && this.config?.saveMode === "withRecord") {
+            // What that save carries, as the previous instance noted it: changes made since wait for the next save, and a
+            // carried pick undone since is linked all the same, its removal waiting (see SyncEngine.holdForCreate). The save
+            // counts as under way for the time it has left (see onNewRecordSaveLate).
+            this.engine.setMany(carried, true);
+            this.followNewRecordSave(this.engine, orphan.saveDeadline);
+            this.engine.setMany(picks, true);
+            const kept = new Set(picks.map((item) => item.id));
+            this.engine.setMany(carried.filter((item) => !kept.has(item.id)), false);
+        } else if (picks.length) {
+            this.engine.setMany(picks, true);
+        }
     }
 
     /**
@@ -886,7 +1273,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             this.resyncRetries = 0;
             // The message of an earlier read that failed is out of date now (another message stays).
             if (this.error?.startsWith(this.t.loadSelectedFailed)) this.error = null;
-            if (isResync && !sameIds(before, engine.selected())) {
+            // Links changed elsewhere (a subgrid, another tab or user): a read-only field shows them but leaves the host
+            // column alone, as its user can't edit it (the names copy plug-in, or the next change where the field can be
+            // edited, copies them; safety review C4). Its own changes still finish with their copy (see onSettled).
+            if (isResync && !this.readOnly() && !sameIds(before, engine.selected())) {
                 this.updateSummary();
             }
             this.render();
@@ -926,6 +1316,10 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             if (token !== this.initToken || this.destroyed) return;
             if (loaded) {
                 this.error = null;
+                const engine = this.engine;
+                const bridge = this.bridge;
+                const recordId = engine?.getRecordId();
+                if (engine && bridge && recordId && this.config?.saveMode === "withRecord") this.startHolding(engine, bridge, recordId);
                 this.firstLoadDone();
                 this.render();
                 this.warmOptions(token);
@@ -970,14 +1364,30 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         // What the column showed on the unsaved form, and what its OnChange saw, now belong to the record (see syncHost):
         // before the engine gets the id, since with no picks to link it draws the field at once.
         if (engine === this.engine && !this.destroyed) this.hostField?.saved(recordId);
+        // An instance that went during the save (a rule hid the field): nothing waits for a next save of it, so the picks
+        // made during the save are written with the others, and a carried pick undone since isn't written at all (see
+        // SyncEngine.holdForCreate). Before the engine gets the id, which starts the writes.
+        if ((engine !== this.engine || this.destroyed) && engine.isHolding()) engine.stopHolding();
         engine.setRecordId(recordId);
         if (engine.hasPendingChanges()) liveEngines.add(engine);
         if (engine === this.engine && !this.destroyed) {
+            clearTimeout(this.newSaveTimer);
+            this.newSaveInFlight = false;
+            // With the record: the picks of the first save are being linked, and later changes wait for the next save.
+            this.startHolding(engine, bridge, recordId);
+            // The changes can't wait for a save here after all (see startHolding): those made during the first save are
+            // written at once too.
+            if (this.hold?.engine !== engine && engine.isHolding()) engine.stopHolding();
             bridge.watchSubgrids(recordId, this.onSubgridLoad);
             // The create may have made links of its own (a plug-in, or the record was created from a related
             // record's subgrid): read them once the picks are written (loadSelected waits for that).
             this.scheduleResync();
             this.render();
+        } else if (!engine.hasPendingChanges() && !engine.isBusy()) {
+            // An orphan with nothing to write (a carried pick undone since, see above) goes now: no write will settle it.
+            liveEngines.delete(engine);
+            engine.dispose();
+            bridge.dispose();
         } else if (!detached.has(engine)) {
             // An orphan whose form was saved and closed (Save & Close): it now writes on its own.
             const key = `${recordId}|${schemaName.toLowerCase()}`;
@@ -989,7 +1399,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 failures: 0,
                 firstError: "",
                 unknown: false,
-                copy: this.config?.writeSummary ? this.startCopy(recordId, key, data) : null,
+                copy: this.copiesNames(data?.rel ?? this.rel) ? this.startCopy(recordId, key, data) : null,
             });
         }
     }
@@ -999,8 +1409,12 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         console.error(`[${CONTROL_NAME}] ${operation} failed for ${item.id}`, error);
         const reason = friendlyError(error, this.t, "change");
         // Every queued change would fail the same way (no permission, offline, server busy): drop them now and count
-        // them as failed, instead of sending them one by one.
-        const dropped = stopsBatch(error) ? engine.cancelQueued() : 0;
+        // them as failed, instead of sending them one by one. While changes wait for the record's save (With the record),
+        // those of a passing problem (offline, busy, too slow) wait for the next save instead: the form shows them as
+        // unsaved again.
+        const rehold = engine === this.engine && engine.isHolding() && isTransient(error);
+        const cancelled = stopsBatch(error) ? engine.cancelQueued(rehold) : 0;
+        const dropped = rehold ? 0 : cancelled;
         if (engine !== this.engine) {
             const away = detached.get(engine);
             if (away) {
@@ -1023,6 +1437,29 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         return mayHaveSaved(error);
     }
 
+    /**
+     * The read of the saved links that a required column's last removals waited for failed (see SyncEngine.release):
+     * the save's changes weren't written. Reported like failed writes, so a save that writes its links first isn't made
+     * again (see onSettled), with the existing messages ("Couldn't remove ...").
+     */
+    private onCheckFailed(engine: SyncEngine, changes: { item: Item; change: LinkChange }[], error: unknown): void {
+        console.error(`[${CONTROL_NAME}] reading the saved links before ${changes.length} changes failed`, error);
+        if (engine !== this.engine) {
+            const away = detached.get(engine);
+            if (away) {
+                away.failures += changes.length;
+                if (!away.firstError) away.firstError = friendlyError(error, away.t, "read");
+            }
+            return;
+        }
+        const reason = friendlyError(error, this.t, "read");
+        if (this.batchErrors === 0) this.batchFirstError = reason;
+        this.batchErrors += changes.length;
+        const [{ item, change }] = changes;
+        this.error = this.batchErrors === 1 ? `${change === "add" ? this.t.addFailed(item.name) : this.t.removeFailed(item.name)} ${reason}` : `${this.t.manyFailed(this.batchErrors)} ${this.batchFirstError}`;
+        this.render();
+    }
+
     private onSettled(engine: SyncEngine, changed: boolean): void {
         if (engine !== this.engine) {
             const away = detached.get(engine);
@@ -1043,9 +1480,13 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         }
         // A write that may have been saved changes the links as much as one that was: subgrids and the other instances
         // on the page read them again.
+        // Write the links = Before, names stored: the save made again once these links are written stores the names.
+        const savedWithNames = this.hold?.engine === engine && !!this.hold.before && this.hold.savesNames && !hadErrors;
         if (changed || unknown) {
             this.scheduleSubgridRefresh();
-            if (!unknown) this.updateSummary();
+            // Changes that wait for the next save (made while these were written, or a new record's carried pick taken
+            // away meanwhile): the page's names aren't the saved ones, so the copy follows the links saved on the server.
+            if (!unknown && !savedWithNames) this.updateSummary(engine.hasHeldChanges());
             const recordId = engine.getRecordId();
             if (recordId) this.resyncPeers(this.recordKey(recordId), engine);
         } else if (markedPeers) {
@@ -1054,9 +1495,39 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             const recordId = engine.getRecordId();
             if (recordId) this.resyncPeers(this.recordKey(recordId), engine, true);
         }
+        // With the record: the record's save stored the names of the changes, but some were refused, or the read before a
+        // required column's last removals found other links saved (another tab or user changed them, see
+        // SyncEngine.release): the copy writes the names of the saved links. Not when the save made again once the links
+        // are written stores them (Before).
+        const checked = engine.takeCheckChange();
+        const repairNames = (hadErrors || checked) && !changed && !unknown && this.hold?.engine === engine && this.hold.savesNames && !savedWithNames;
+        let checkNames = false;
+        // The record's save stored the names the form showed. Once its links are written, the copy checks them against
+        // the links saved on the server (one read; a write only when they differ): someone may have changed the links
+        // since the form read them (a name added elsewhere would be missing, a removed one back), or a change was undone
+        // while that save was on its way.
+        const stored = this.hold?.engine === engine ? this.hold.storedNames : undefined;
+        if ((stored !== undefined || this.checkNamesLater) && !engine.isBusy() && !engine.hasReleasedWork() && !engine.hasPendingChanges()) {
+            if (this.hold?.engine === engine) this.hold.storedNames = undefined;
+            this.checkNamesLater = false;
+            checkNames = true;
+        }
+        if (repairNames) this.updateSummary(true);
+        else if (checkNames) this.updateSummary(true, true);
         if (hadErrors) {
             // A failure might not be what it seems (the connection dropped after the server saved): re-read.
             this.scheduleResync();
+        }
+        const hold = this.hold;
+        if (hold?.engine === engine && hold.before) {
+            // A link refused while the save waits for the links (one of them, or one already on its way when it started)
+            // cancels the save: it isn't made again.
+            if (hadErrors) {
+                hold.before.failed = true;
+                hold.before.failedMembers.add(hold);
+            }
+            // Not from inside the OnSave handler that released the writes (see lastWord, finishBefore).
+            if (hold.before.phase === "writing" && !engine.isBusy() && !engine.hasReleasedWork()) setTimeout(() => this.finishBefore(hold, hadErrors), 0);
         }
         this.render();
     }
@@ -1069,7 +1540,16 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             // Nothing was saved after all, but the instances told their links are out of date read them again.
             this.resyncPeers(away.key, engine, true);
         }
-        if (engine.hasPendingChanges() || engine.isBusy()) return;
+        if (engine.hasPendingChanges() || engine.isBusy()) {
+            // Only a save that reported late is left to write what it carried: leaving the page needn't wait for it.
+            if (away.kept) NToNMultiSelect.parkLate(away.kept);
+            return;
+        }
+        // A later save of the form still carries changes of this field, undone since (see retireEngine): the engine stays
+        // for its OnPostSave, whose names the copy checks then (see onHeldPostSave, dropKept). What is done now is
+        // finished now: its failures reported and its names put right.
+        const kept = away.kept;
+        const savePending = !!kept && !!(kept.saving ?? kept.lateSaving);
         if (away.failures > 0) {
             notifyApp(`${away.t.closedFailures(away.failures, away.label)} ${away.firstError}`);
         }
@@ -1078,8 +1558,21 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         // A write that failed may still have been saved (see mayHaveSaved): then the copy reads the saved links and
         // writes their names, whatever the page shows.
         if (away.copy) {
+            // The read before a required column's last removals found other links saved (see SyncEngine.release).
+            const checked = engine.takeCheckChange();
             if (away.unknown) away.copy.names.refresh(away.copy.writer);
+            else if (away.namesStored) away.copy.names.refresh(away.copy.writer, true);
             else if (changed) away.copy.names.update(engine.selected(), away.copy.writer);
+            // With the record, the record's save stored the names of its changes, but they were all refused.
+            else if (checked || (away.failures > 0 && engine.isHolding())) away.copy.names.refresh(away.copy.writer);
+        }
+        if (savePending && kept) {
+            away.failures = 0;
+            away.firstError = "";
+            away.unknown = false;
+            away.namesStored = false;
+            NToNMultiSelect.parkLate(kept);
+            return;
         }
         detached.delete(engine);
         liveEngines.delete(engine);
@@ -1150,18 +1643,52 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
      * with an update of its own. The form is never made dirty, and a new record gets nothing before its first save
      * (its links are written first, then the copy).
      */
-    private updateSummary(force = false): void {
+    private updateSummary(force = false, check = false): void {
         const engine = this.engine;
-        const recordId = engine?.getRecordId();
-        // With the host column locked by column security, the write would be refused: a change made in a subgrid of the
-        // form is left to the names copy plug-in, when it is installed.
-        if (this.destroyed || !this.config?.writeSummary || !engine || !recordId || this.columnLocked()) return;
-        this.copy ??= this.startCopy(recordId, this.recordKey(recordId), this.data);
+        if (!engine || !this.hostCopy()) return;
         if (this.copy) {
             // `force`: read the saved links and write their names even when the page's names haven't changed.
-            if (force) this.copy.names.refresh(this.copy.writer);
+            // `check`: only to make sure names the record's save stored match the saved links (see NamesCopy.refresh).
+            if (force) this.copy.names.refresh(this.copy.writer, check);
             else this.copy.names.update(engine.selected(), this.copy.writer);
         }
+    }
+
+    /**
+     * "Copy names into the host column" for this field: the setting, unless the field is bound to the record's own name
+     * (the table's primary name column of `rel`), whose names would replace the record's name. That column is then never
+     * written, by the copy or by the record's save, and the link requests aren't tagged (safety review C7).
+     */
+    private copiesNames(rel: RelationshipInfo | null = this.rel): boolean {
+        if (!this.config?.writeSummary) return false;
+        const host = (this.context.parameters.value as unknown as { attributes?: { LogicalName?: string } } | undefined)?.attributes?.LogicalName;
+        const name = rel?.currentNameAttribute;
+        if (!host || !name || host.toLowerCase() !== name.toLowerCase()) return true;
+        if (!this.warnedNameColumn) {
+            this.warnedNameColumn = true;
+            console.warn(`[${CONTROL_NAME}] The host column ${host} is the record's own name: the names aren't copied into it.`);
+        }
+        return false;
+    }
+
+    /** Whether the field is bound to the record's own name: the table's primary name column (see copiesNames). */
+    private boundToRecordName(): boolean {
+        const host = (this.context.parameters.value as unknown as { attributes?: { LogicalName?: string } } | undefined)?.attributes?.LogicalName;
+        const name = this.rel?.currentNameAttribute;
+        return !!host && !!name && host.toLowerCase() === name.toLowerCase();
+    }
+
+    /**
+     * The host column copy of this instance's record ("Copy names into the host column"), made the first time it is
+     * needed, or null when there is none: the setting is off, the column is locked by column security (a change made
+     * in a subgrid of the form is then left to the names copy plug-in, when it is installed), or no record.
+     */
+    private hostCopy(): HostCopy | null {
+        const engine = this.engine;
+        const recordId = engine?.getRecordId();
+        if (this.destroyed || !this.copiesNames() || !engine || !recordId || this.columnLocked()) return null;
+        this.copy ??= this.startCopy(recordId, this.recordKey(recordId), this.data);
+        return this.copy;
     }
 
     /**
@@ -1170,7 +1697,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
      */
     private linkTag(rel: RelationshipInfo, recordId: string): string | undefined {
         const host = (this.context.parameters.value as unknown as { attributes?: { LogicalName?: string } }).attributes?.LogicalName;
-        return this.config?.writeSummary && host ? linkTag(rel, recordId, host) : undefined;
+        return this.copiesNames(rel) && host ? linkTag(rel, recordId, host) : undefined;
     }
 
     /**
@@ -1188,16 +1715,24 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         if (!data) return null;
         const label = this.context.mode.label || this.t.relatedRecords;
         const t = this.t;
+        const separator = () => this.namesSeparator();
         const copy: HostCopy = {
             names: namesCopyFor(`${recordKey}|${host}`, this.loadedCopy),
             writer: {
                 maxLength: attributes.MaxLength,
+                // Asked at each write: the copies of the field on the page may come and go.
+                get separator() {
+                    return separator();
+                },
                 write: (value, version) => trackCopy(data.updateRecord(recordId, host, value, version)),
                 onError: (error, step) => this.onCopyFailed(copy, error, label, t, step),
-                readHostAndLinks: async () => {
+                // A quiet read (a check of names the record's save stored) doesn't keep the page from closing (see
+                // installUnloadGuard): the save stored the names, so nothing is lost if the page goes meanwhile.
+                readHostAndLinks: async (quiet) => {
                     const engine = this.engine;
                     const version = engine?.version;
-                    const saved = await trackCopy(data.readHostAndLinks(recordId, host));
+                    const read = data.readHostAndLinks(recordId, host);
+                    const saved = await (quiet ? read : trackCopy(read));
                     this.showSaved(engine, version, recordId, saved.items);
                     return saved;
                 },
@@ -1234,6 +1769,662 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         } else {
             notifyApp(message);
         }
+    }
+
+    // ---------------------------------------------------------------- "Save the selection" = With the record
+
+    /**
+     * From now on the changes on the saved record `recordId` wait for its save (see HoldState). Not where the save can't
+     * be followed (quick create, a dialog or side pane, the tables whose save skips OnSave and OnPostSave), without the
+     * host column on the form, while column security locks it, with another copy of the field showing the record, or
+     * for a field bound to the record's own name in an app with "Async save handler" on: changes are then saved at
+     * once, as with At once.
+     */
+    private startHolding(engine: SyncEngine, bridge: FormBridge, recordId: string): void {
+        const config = this.config;
+        const host = this.hostField;
+        const table = (this.contextInfo(this.context).entityTypeName ?? "").toLowerCase();
+        if (config?.saveMode !== "withRecord" || !host || this.hold || engine !== this.engine || this.destroyed) return;
+        if (NO_POST_SAVE_TABLES.includes(table) || this.columnLocked() || !host.isOnForm(recordId)) return;
+        if (this.recordPeers(this.recordKey(recordId)).length > 0) return;
+        // Bound to the record's own name, in an app with "Async save handler" on: a save there builds its request only
+        // once the app's OnSave handlers are done, and could carry the names that a change made meanwhile shows in the
+        // column into the record's name (review of the fixes, fourth round). Its changes are saved at once there.
+        if (this.boundToRecordName() && bridge.waitsForSaveHandlers()) return;
+        const state: HoldState = { engine, bridge, recordId, host, timing: config.linkTiming, savesNames: this.copiesNames(), saving: null, before: null, pass: false, owner: this };
+        const followed = bridge.followSaves(recordId, {
+            onSave: (args) => this.onHeldSave(state, args),
+            onPostSave: (success, savedId) => this.onHeldPostSave(state, success, savedId),
+            onDataLoad: (loadState) => this.onHeldDataLoad(state, loadState),
+        });
+        if (!followed) {
+            // Not on the page yet (the platform can attach the control late): tried again once it is (see updateView).
+            this.holdWhenPlaced = !this.view.element().isConnected;
+            return;
+        }
+        this.hold = state;
+        engine.hold();
+        watchUserSaves();
+    }
+
+    /** Another copy of the field shows the record: from now on its changes are saved at once (see startHolding). */
+    private stopHolding(): void {
+        const hold = this.hold;
+        if (!hold) return;
+        this.hold = null;
+        if (hold.before) NToNMultiSelect.abandonRound(hold.before);
+        // A save stored the names and its links are still being written: the copy checks them once they are.
+        if (hold.storedNames !== undefined) this.checkNamesLater = true;
+        if (hold.saving) clearTimeout(hold.saving.timer);
+        hold.saving = null;
+        hold.lateSaving = undefined;
+        hold.bridge.unfollowSaves();
+        hold.engine.stopHolding();
+    }
+
+    /**
+     * OnSave of the record whose changes are held. Write the links = After the record is saved (default): the column
+     * isn't part of the save (the form never writes it), and the changes held now are written once the save is done.
+     * Before the record is saved: the field joins the save's round (see BeforeRound), whose own handler, after every
+     * other handler of the save, cancels it when no other handler did; the links are written, then the save is made
+     * again (see lastWord, finishBefore). Runs for an instance that is gone too, while a save it held changes for is
+     * under way.
+     */
+    private onHeldSave(state: HoldState, args: SaveEventArgs): void {
+        const { engine, host, recordId } = state;
+        const key = state.bridge.followedEntity() ?? state;
+        if (state.pass) {
+            // The save made again once the links were written: it goes ahead, with the names when they are stored.
+            state.pass = false;
+            // Changes made while the links were written wait for the next save: the column then holds their names too,
+            // so it stays out of this save (and the names copy writes the names of the saved links, see saveAgain).
+            if (state.savesNames && !engine.hasHeldChanges()) state.passNames = host.isDirty(recordId) === true ? host.valueOn(recordId) : undefined;
+            else host.markNever(recordId);
+            NToNMultiSelect.noteWhatSaveSends(key);
+            return;
+        }
+        const round = beforeRounds.get(key);
+        const saveMode = args.getSaveMode?.() ?? 1;
+        // Asked first: the user's save command is used up by the first save after it, also when a handler before this
+        // one cancelled that save. A validation script that then saves the form itself mustn't find it (see savesBefore).
+        const userCommand = state.timing === "before" && savesBefore(saveMode, state);
+        // With the app's "Async save handler" on, a handler can't see another one cancel the save (measured live): the
+        // links can't go first there without being written for a save that a script cancels, so they follow the
+        // record's save, as with After (owner, 2026-11-06).
+        const before = userCommand && !state.bridge.waitsForSaveHandlers();
+        // Another Before field of the form started a round in this save, or writes its links and the user saved again:
+        // this field's changes go with it, even when a handler between the two cancelled the save (a collecting round's
+        // last handler sees that, see lastWord; a writing round cancels the user's save and makes it again).
+        const joining = !!round && state.timing === "before" && !state.before && (round.phase === "collecting" || (round.phase === "writing" && before));
+        // Cancelled by a handler that ran before this one (a validation script, a script that turns auto-save off):
+        // nothing is released, and the changes keep waiting.
+        if (args.isDefaultPrevented?.() === true && !joining) return;
+        if (state.before) {
+            if (before) {
+                // Its links are still being written (Save clicked again): unless another handler of this save cancels it,
+                // the round takes it, and its save made again saves the record, and closes the form or opens a new one if
+                // this click asked for it (see absorb).
+                NToNMultiSelect.absorb(state.before, saveMode, null, state, args);
+                return;
+            }
+            // The user leaves the record (or a command or a script saves it) while those links are written: this save goes
+            // ahead, and nothing is saved again, for any field of the round. Their columns go out of it (the names were for
+            // the save made again), after another field of the form may have looked at what it sends (review of the
+            // fixes, fourth round).
+            const unsaved = state.bridge.followedIsDirty() === true;
+            NToNMultiSelect.abandonRound(state.before);
+            if (unsaved) NToNMultiSelect.noteWhatSaveSends(key);
+        }
+        // A kept state (its instance is gone) waits for a save under way, or one that reported late (see lateSaving):
+        // another save of the form starting means that one is over (a form saves one at a time), cancelled unseen if it
+        // never reported (Async save handler on). Nothing can carry its changes now: they are dropped.
+        if (!state.owner && (state.saving || state.lateSaving)) {
+            // (Asked first: the form says it has no unsaved changes once it sends a save, see noteWhatSaveSends.)
+            const unsaved = state.bridge.followedIsDirty() === true;
+            this.endSave(state);
+            state.lateSaving = undefined;
+            this.dropKept(state);
+            if (unsaved) NToNMultiSelect.noteWhatSaveSends(key);
+            return;
+        }
+        // A save that reported late is over once another one starts: this one carries what waits.
+        state.lateSaving = undefined;
+        const changes = engine.heldChanges();
+        if (changes.size === 0 || !state.owner) return;
+        if (state.saving) {
+            // A save already on its way carries the changes held then; it writes them when it is done. Those made since
+            // wait for a later save, and without Copy names their column goes out of this one: the fields of this save
+            // that looked at what it sends see it again (see noteWhatSaveSends; the view of the save on its way isn't
+            // touched: it may be sending already).
+            if (!state.savesNames) {
+                const unsaved = state.bridge.followedIsDirty() === true;
+                host.markNever(recordId);
+                if (unsaved) NToNMultiSelect.noteWhatSaveSends(key);
+            }
+            return;
+        }
+        const keepOne = host.isRequired(recordId);
+        // Before the record is saved: only for saves the control can make again (see savesBefore); any other save goes
+        // ahead, its links after it.
+        if (before) {
+            if (round && round.phase === "writing") {
+                // Other fields of the form write their links, and the user saved again: unless another handler of this
+                // save cancels it, this field's are written with them, and the round's save made again saves the record
+                // once they all are (see absorb, finishBefore).
+                NToNMultiSelect.absorb(round, saveMode, { control: this, state, changes, keepOne }, state, args);
+                return;
+            }
+            // The form never saves the column without Copy names (see HoldState.savesNames), whatever becomes of this save.
+            if (!state.savesNames) host.markNever(recordId);
+            const member: BeforeMember = { control: this, state, changes, keepOne };
+            if (round) {
+                round.members.push(member);
+                state.before = round;
+                return;
+            }
+            const started: BeforeRound = { key, saveMode, phase: "collecting", members: [member], removeLast: null, pending: new Set(), failedMembers: new Set(), failed: false, absorbing: null, taken: null };
+            beforeRounds.set(key, started);
+            state.before = started;
+            // The round's handler: it runs after the other handlers of this save, those a script added after this
+            // field's included (see BeforeRound).
+            started.removeLast = state.bridge.addSaveHandler((ctx) => NToNMultiSelect.lastWord(started, saveEventArgs(ctx) ?? {}));
+            if (!started.removeLast) {
+                // It can't be added: the save is cancelled now (a handler added to OnSave after this field's could
+                // still cancel it unseen), and the links are written.
+                NToNMultiSelect.lastWord(started, args);
+                return;
+            }
+            // Once this save's handlers have run, the round's handler comes off again (see afterSaveHandlers).
+            setTimeout(() => NToNMultiSelect.afterSaveHandlers(started, args), 0);
+            return;
+        }
+        // The form saves the names with the record only when they are stored (see HoldState.savesNames).
+        const names = state.savesNames && host.isDirty(recordId) === true ? host.valueOn(recordId) : undefined;
+        if (!state.savesNames) host.markNever(recordId);
+        const saving: NonNullable<HoldState["saving"]> = { changes, keepOne, names, timer: setTimeout(() => this.saveNotReported(state, saving), SAVE_REPORT_MS) };
+        state.saving = saving;
+        // Whether the save has anything to send, seen here: once the form starts sending it says it has no unsaved
+        // changes any more (measured), so this can't be asked later. Other With the record fields of this form take their
+        // columns out of the save in their own OnSave handlers, which may run after this one: the decision is made once
+        // all of them have run, on what the last of them saw (see settleHeldSaves).
+        const sendsNothing = state.bridge.followedIsDirty() === false;
+        const member: HeldSaveMember = { control: this, state, saving, args, sendsNothing };
+        const members = heldSaves.get(key);
+        if (members) {
+            members.push(member);
+        } else {
+            heldSaves.set(key, [member]);
+            setTimeout(() => NToNMultiSelect.settleHeldSaves(key), 0);
+        }
+    }
+
+    /**
+     * A field's OnSave handler took its column out of the save (the save made again, see finishRound; a kept state
+     * dropping what it held, or a change made while an earlier save is on its way, review of the fixes, third round; a
+     * Before round that a save going ahead ends, fourth round)
+     * after an After field of the form had looked at what it sends (see onHeldSave): whether it has anything to send is
+     * seen again, for the fields that wait for it (settleHeldSaves decides on the last view). Seen through the last of
+     * them: the field that took its column out may have let go of the form already (see dropKept). Not for a save that
+     * a handler of a later save would see sending (the form then says it has nothing unsaved): only when the form still
+     * had unsaved changes as the column went.
+     */
+    private static noteWhatSaveSends(key: object): void {
+        const members = heldSaves.get(key);
+        const last = members?.[members.length - 1];
+        if (last) last.sendsNothing = last.state.bridge.followedIsDirty() === false;
+    }
+
+    /**
+     * Once every OnSave handler of a save has run (see onHeldSave): a save one of them cancelled leaves the changes
+     * waiting; a save left with nothing to send (the fields' columns taken out, nothing else changed) sends nothing and
+     * reports no OnPostSave, and nothing can refuse it, so their changes are written now. Otherwise they wait for
+     * OnPostSave.
+     */
+    private static settleHeldSaves(key: object): void {
+        const members = heldSaves.get(key) ?? [];
+        heldSaves.delete(key);
+        if (members.length === 0) return;
+        const cancelled = members.some((member) => member.args.isDefaultPrevented?.() === true);
+        const sendsNothing = members[members.length - 1].sendsNothing;
+        for (const { control, state, saving } of members) {
+            if (state.saving !== saving) continue;
+            if (cancelled) {
+                control.endSave(state);
+                if (!state.owner) control.dropKept(state);
+            } else if (sendsNothing) {
+                control.endSave(state);
+                control.releaseHeld(state, saving.changes, saving.keepOne);
+            }
+        }
+    }
+
+    /** OnPostSave of the record whose changes are held: a successful save writes the changes it carried. */
+    private onHeldPostSave(state: HoldState, success: boolean | null, savedId: string | null): void {
+        // A save that reported late (see lateSaving) is done after all.
+        const late = !state.saving ? state.lateSaving : undefined;
+        if (late) {
+            state.lateSaving = undefined;
+            state.saving = late;
+        }
+        const saving = state.saving;
+        if (!saving) return;
+        // Without getIsSaveSuccess (on-premises), a save that left the form without unsaved changes counts as done.
+        const done = (success ?? state.bridge.followedIsDirty() === false) && savedId === state.recordId;
+        this.endSave(state);
+        if (done && saving.names !== undefined) {
+            (state.owner?.copy ?? detached.get(state.engine)?.copy)?.names.stored(saving.names);
+            state.storedNames = saving.names;
+            // The instance is gone (Save & Close): the links it carried are written on their own (see finishDetached).
+            const away = detached.get(state.engine);
+            if (away) away.namesStored = true;
+        }
+        if (done) this.releaseHeld(state, saving.changes, saving.keepOne);
+        else if (!state.owner) this.dropKept(state);
+    }
+
+    /**
+     * The form's data was loaded again. A refresh (Discard changes in the form's prompt, or a script's
+     * formContext.data.refresh(false)) drops the form's unsaved changes, so the held ones go too; the changes a save under
+     * way carries stay. The reload after a save changes nothing.
+     */
+    private onHeldDataLoad(state: HoldState, loadState: number | null): void {
+        if (loadState !== 3) return;
+        // A save that reported late (see lateSaving) may still be saved: what it carries stays too.
+        const carried = state.saving ?? state.lateSaving;
+        const engine = state.engine;
+        engine.dropHeld(carried ? new Set(carried.changes.keys()) : undefined);
+        // The check of names a save stored waited for the changes dropped now (see onSettled): it is made now (safety
+        // review of the S01 fix).
+        if (state.storedNames !== undefined && state.owner && !carried && !engine.isBusy() && !engine.hasReleasedWork() && !engine.hasPendingChanges()) {
+            state.storedNames = undefined;
+            state.owner.updateSummary(true, true);
+        }
+    }
+
+    /** The save carrying held changes is over (see HoldState.saving): what is still held counts as unsaved again. */
+    private endSave(state: HoldState): void {
+        if (state.saving) clearTimeout(state.saving.timer);
+        state.saving = null;
+        state.owner?.render();
+    }
+
+    /** The save never said how it went: its changes count as unsaved again (and are dropped once the instance is gone). */
+    private saveNotReported(state: HoldState, saving: NonNullable<HoldState["saving"]>): void {
+        if (state.saving !== saving) return;
+        // With the app's "Async save handler" on, the save may still wait for the promise of another OnSave handler (a
+        // dialog left open): its OnPostSave, if it comes, still writes what it carried (see onHeldPostSave).
+        if (state.bridge.waitsForSaveHandlers()) state.lateSaving = saving;
+        this.endSave(state);
+        if (!state.owner && !state.lateSaving) this.dropKept(state);
+        else NToNMultiSelect.parkLate(state);
+    }
+
+    /**
+     * A kept state (its instance is gone) that only waits for a save that reported late (see lateSaving): nothing is on
+     * its way, and the save may never report (cancelled unseen), so leaving the page doesn't ask about it (see liveEngines).
+     * Its OnPostSave, if it comes, puts the engine back (see releaseHeld).
+     */
+    private static parkLate(state: HoldState): void {
+        if (!state.owner && state.lateSaving && !state.saving && !state.engine.isBusy() && !state.engine.hasReleasedWork()) liveEngines.delete(state.engine);
+    }
+
+    /** Lets `changes` be written (see SyncEngine.release); `keepOne` for a required column. */
+    private releaseHeld(state: HoldState, changes: Map<string, LinkChange>, keepOne: boolean): void {
+        // Writes on their way again (a kept state's late save succeeded, see parkLate): leaving the page asks about them.
+        if (!state.owner) liveEngines.add(state.engine);
+        state.engine.release(changes, keepOne);
+        // Nothing left to write (the changes were undone): a kept state lets go.
+        if (!state.owner && !state.engine.isBusy() && !state.engine.hasPendingChanges()) this.dropKept(state);
+    }
+
+    /**
+     * Write the links = Before: the round's handler, after the other OnSave handlers of the save (see BeforeRound). When
+     * one of them cancelled the save, a link was refused meanwhile or a field went, nothing is written and the changes
+     * keep waiting. Otherwise the save is cancelled now and the fields' links are written; once they all are, the record
+     * is saved, and the form closed or a new one opened as that save would have done (see finishBefore).
+     */
+    private static lastWord(round: BeforeRound, args: SaveEventArgs): void {
+        if (beforeRounds.get(round.key) !== round || round.phase !== "collecting") return;
+        if (args.isDefaultPrevented?.() === true || round.failed || !NToNMultiSelect.roundIntact(round)) {
+            NToNMultiSelect.dropRound(round);
+            return;
+        }
+        NToNMultiSelect.take(round, args);
+        round.phase = "writing";
+        for (const { state } of round.members) round.pending.add(state);
+        for (const { state, changes, keepOne } of round.members) state.engine.release(changes, keepOne);
+    }
+
+    /**
+     * Once the OnSave handlers of the save that started `round` have run (`args`: its first field's): the round's handler
+     * comes off the form again. If the platform didn't run it (a client that doesn't run a handler added during a save;
+     * Dynamics runs it, measured), the round ends here: a save that a handler cancelled writes nothing; for one that went
+     * ahead, the links are written at once, while the record is being saved, without waiting for its outcome as After
+     * would.
+     */
+    private static afterSaveHandlers(round: BeforeRound, args: SaveEventArgs): void {
+        round.removeLast?.();
+        round.removeLast = null;
+        if (beforeRounds.get(round.key) !== round || round.phase !== "collecting") return;
+        if (args.isDefaultPrevented?.() === true) {
+            NToNMultiSelect.dropRound(round);
+            return;
+        }
+        beforeRounds.delete(round.key);
+        for (const { state, changes, keepOne } of round.members) {
+            if (state.before === round) state.before = null;
+            state.engine.release(changes, keepOne);
+        }
+    }
+
+    /**
+     * The user saved again while `round` writes its links (see AbsorbedSave): notes what this field's handler saw, and adds
+     * the round's handler for that save once, which decides after the other handlers of the save (see absorbSave). A
+     * client that can't add it has it decided at once.
+     */
+    private static absorb(round: BeforeRound, saveMode: number, joiner: BeforeMember | null, state: HoldState, args: SaveEventArgs): void {
+        // The round has taken this save already (decided at once, see BeforeRound.taken): this field joins at once.
+        if (round.taken && round.taken === saveDecision) {
+            if (saveMode === 2 || saveMode === 59) round.saveMode = saveMode;
+            if (joiner && !round.failed) NToNMultiSelect.join(round, joiner);
+            return;
+        }
+        let save = round.absorbing;
+        if (!save) {
+            const added: AbsorbedSave = { joiners: [], remove: null, args };
+            round.absorbing = added;
+            added.remove = state.bridge.addSaveHandler((ctx) => NToNMultiSelect.absorbSave(round, added, saveEventArgs(ctx) ?? {}));
+            if (added.remove) setTimeout(() => NToNMultiSelect.afterAbsorbing(round, added), 0);
+            save = added;
+        }
+        if (saveMode === 2 || saveMode === 59) save.mode = saveMode;
+        if (joiner) save.joiners.push(joiner);
+        if (!save.remove) NToNMultiSelect.absorbSave(round, save, args);
+    }
+
+    /**
+     * The round's handler for a save of the user's while it writes (see absorb), after the other handlers of that save. A
+     * save one of them cancelled is left alone: nothing joins, and its Save & Close or Save & New asks for nothing. Otherwise
+     * the round takes it: it is cancelled, its command goes to the round's save made again, and the other Before fields of
+     * the form with changes have their links written with the round's (unless a link of the round was refused).
+     */
+    private static absorbSave(round: BeforeRound, save: AbsorbedSave, args: SaveEventArgs): void {
+        if (round.absorbing !== save) return;
+        round.absorbing = null;
+        if (beforeRounds.get(round.key) !== round || round.phase !== "writing") return;
+        if (args.isDefaultPrevented?.() === true) return;
+        NToNMultiSelect.take(round, args);
+        if (save.mode !== undefined) round.saveMode = save.mode;
+        if (round.failed) return;
+        for (const joiner of save.joiners) NToNMultiSelect.join(round, joiner);
+    }
+
+    /** The round takes the save under way: it is cancelled, and made again once the links are written. */
+    private static take(round: BeforeRound, args: SaveEventArgs): void {
+        args.preventDefault?.();
+        round.taken = saveDecision;
+    }
+
+    /** A Before field's changes join the writing `round`: its links are written with the round's. */
+    private static join(round: BeforeRound, joiner: BeforeMember): void {
+        const { control, state, changes, keepOne } = joiner;
+        if (beforeRounds.get(round.key) !== round || round.phase !== "writing") return;
+        if (state.before || state.owner !== control || control.hold !== state) return;
+        // The form never saves the column without Copy names (see HoldState.savesNames).
+        if (!state.savesNames) state.host.markNever(state.recordId);
+        round.members.push(joiner);
+        round.pending.add(state);
+        state.before = round;
+        state.engine.release(changes, keepOne);
+    }
+
+    /**
+     * Once the handlers of a save the round may take have run (see absorb): its handler comes off again. If the platform
+     * didn't run it, the save went ahead unless another handler cancelled it, and the round ends, as for any save that goes
+     * ahead while it writes (see abandonRound).
+     */
+    private static afterAbsorbing(round: BeforeRound, save: AbsorbedSave): void {
+        save.remove?.();
+        save.remove = null;
+        if (round.absorbing !== save) return;
+        round.absorbing = null;
+        if (save.args.isDefaultPrevented?.() !== true) NToNMultiSelect.abandonRound(round);
+    }
+
+    /** Every field of the round still holds its changes for it (none went, showed another record or left the round). */
+    private static roundIntact(round: BeforeRound): boolean {
+        return round.members.length > 0 && round.members.every(({ control, state }) => state.before === round && state.owner === control && control.hold === state);
+    }
+
+    /** The round ends without writing (or without saving again): its fields' changes keep waiting for the next save. */
+    private static dropRound(round: BeforeRound): void {
+        if (beforeRounds.get(round.key) === round) beforeRounds.delete(round.key);
+        for (const { state } of round.members) {
+            if (state.before === round) state.before = null;
+            state.owner?.render();
+        }
+    }
+
+    /**
+     * The round ends without the save made again: a save of the form goes ahead (the user leaves the record, a command or
+     * a script saves it), or one of its fields went (the form closes, a rule hid it). The links on their way are still
+     * written; with Copy names into the host column, the copy writes the names of the links already written (those still
+     * on their way do it once written, see onSettled), as no save stores them.
+     */
+    private static abandonRound(round: BeforeRound): void {
+        if (beforeRounds.get(round.key) === round) beforeRounds.delete(round.key);
+        const writing = round.phase === "writing";
+        for (const { state } of round.members) {
+            if (state.before !== round) continue;
+            state.before = null;
+            if (writing && state.savesNames && !round.pending.has(state) && !round.failedMembers.has(state)) state.owner?.updateSummary();
+            state.owner?.render();
+        }
+        round.pending.clear();
+    }
+
+    /** A field of the round has written its links (see onSettled): once they all have, the save is made again. */
+    private finishBefore(state: HoldState, failed: boolean): void {
+        const round = state.before;
+        if (!round || round.phase !== "writing" || !round.pending.has(state)) return;
+        // Asked by a pick's settle from before the links were released: they are still being written, and their own
+        // settle comes once they are.
+        if (state.engine.isBusy() || state.engine.hasReleasedWork()) return;
+        round.pending.delete(state);
+        if (failed) {
+            round.failed = true;
+            round.failedMembers.add(state);
+        }
+        if (round.pending.size === 0) NToNMultiSelect.finishRound(round);
+    }
+
+    private static finishRound(round: BeforeRound): void {
+        if (beforeRounds.get(round.key) === round) beforeRounds.delete(round.key);
+        const members = round.members;
+        const intact = NToNMultiSelect.roundIntact(round);
+        for (const { state } of members) if (state.before === round) state.before = null;
+        if (round.failed || !intact) {
+            for (const { state } of members) {
+                // No save stores the names of the links that were written (onSettled left them to the save made
+                // again): the copy writes them.
+                if (state.savesNames && !round.failedMembers.has(state)) state.owner?.updateSummary();
+                state.owner?.render();
+            }
+            return;
+        }
+        for (const { state } of members) {
+            state.pass = true;
+            state.passNames = undefined;
+        }
+        void NToNMultiSelect.saveAgain(members.map((member) => member.state), round.saveMode);
+    }
+
+    /** Makes the cancelled save again (see FormBridge.saveAgain), for the fields whose links were written first. */
+    private static async saveAgain(states: HoldState[], saveMode: number): Promise<void> {
+        // Taken now: a field may be gone (Save & Close) by the time the save is done, and the copy still checks the names.
+        const copies = states.map((state) => (state.savesNames ? (state.owner?.hostCopy() ?? detached.get(state.engine)?.copy ?? null) : null));
+        // Changes made while the links were written count as unsaved again, before Save & Close or Save & New leaves the
+        // form: it then asks first.
+        const saved = await states[0].bridge.saveAgain(saveMode, () => {
+            for (const state of states) {
+                state.pass = false;
+                state.owner?.render();
+            }
+        });
+        states.forEach((state, i) => NToNMultiSelect.afterSavedAgain(state, saved, copies[i]));
+    }
+
+    /** The save made again is done (`saved`: the record was saved): the names copy follows it (see HoldState.savesNames). */
+    private static afterSavedAgain(state: HoldState, saved: boolean, copy: HostCopy | null): void {
+        state.pass = false;
+        if (state.savesNames) {
+            if (saved && state.passNames !== undefined) {
+                // The save stored the names the form showed: the copy checks them against the links saved on the server
+                // (one read; a write only when they differ), as someone may have changed the links since the form read them.
+                copy?.names.stored(state.passNames);
+                if (state.owner) state.owner.updateSummary(true, true);
+                else if (copy) copy.names.refresh(copy.writer, true);
+            } else if (state.owner) {
+                // It didn't store them: the copy writes them.
+                state.owner.updateSummary();
+            } else if (copy) {
+                // The field is gone and how that save went isn't known: the copy follows the saved links.
+                copy.names.refresh(copy.writer);
+            }
+        }
+        state.passNames = undefined;
+        state.owner?.render();
+    }
+
+    /**
+     * The instance lets go of its held changes (it goes, or shows another record). A save under way that carries some
+     * (Save & Close, auto-save when leaving, or a save that reported late, see lateSaving) still writes those once it is
+     * done, on their own like any changes left to write (see Detached); the others can't be saved any more. Without one
+     * (Discard, another record, the field hidden by a rule), they are dropped, and the column no longer counts as unsaved.
+     */
+    private letGoOfHeld(hold: HoldState): void {
+        hold.owner = null;
+        // Write the links = Before: its round ends (see abandonRound). The column holds the round's names, for the save
+        // that won't be made again: the form's later saves leave it alone, and the copy writes the names once the links
+        // on their way are done (see finishDetached; safety review of the S01 fix).
+        if (hold.before) {
+            NToNMultiSelect.abandonRound(hold.before);
+            if (hold.savesNames) hold.host.markNever(hold.recordId);
+        }
+        const engine = hold.engine;
+        // A save that reported late (see lateSaving) is still under way too: its OnPostSave, if it comes, writes them.
+        const carried = hold.saving ?? hold.lateSaving;
+        if (carried) {
+            // Changes made since that save started can't be saved any more: dropped, and the column shows what the save
+            // carries, no longer as an unsaved change, so the form's later saves leave it alone (review of the fixes).
+            // With the app's "Async save handler" on, that save may still wait for another OnSave handler and build its
+            // request only then: when it stores the names, the column stays part of it, with what it carries (its
+            // OnPostSave, or dropKept, settles the column).
+            if (engine.dropHeld(new Set(carried.changes.keys())) > 0) {
+                const selected = engine.selected();
+                const maxLength = (this.context.parameters.value as unknown as { attributes?: { MaxLength?: number } }).attributes?.MaxLength;
+                const inSave = hold.savesNames && carried.names !== undefined && hold.bridge.waitsForSaveHandlers();
+                hold.host.show(hold.recordId, namesText(selected, maxLength, this.namesSeparator()), selected.map((item) => item.id).sort().join(), null, inSave ? "dirty" : "never");
+            }
+            NToNMultiSelect.parkLate(hold);
+            return;
+        }
+        hold.bridge.unfollowSaves();
+        if (engine.dropHeld() === 0) return;
+        const saved = engine.savedSelected();
+        const maxLength = (this.context.parameters.value as unknown as { attributes?: { MaxLength?: number } }).attributes?.MaxLength;
+        hold.host.show(hold.recordId, namesText(saved, maxLength, this.namesSeparator()), saved.map((item) => item.id).sort().join(), null, "never");
+    }
+
+    /** A kept state (see letGoOfHeld) whose save didn't save its changes: they are dropped, and it lets go. */
+    private dropKept(state: HoldState): void {
+        const { engine, bridge } = state;
+        const away = detached.get(engine);
+        if (engine.dropHeld() > 0) {
+            // The form may still be open (the field was hidden by a rule): its column shows the saved names again.
+            const saved = engine.savedSelected();
+            const maxLength = (this.context.parameters.value as unknown as { attributes?: { MaxLength?: number } }).attributes?.MaxLength;
+            state.host.show(state.recordId, namesText(saved, maxLength, this.namesSeparator()), saved.map((item) => item.id).sort().join(), null, "never");
+        }
+        // Writes released before are still on their way: the engine lets go once they are done (see finishDetached).
+        if (engine.isBusy() || engine.hasPendingChanges()) return;
+        // Failures counted while the field was gone (a refused write, or a failed read of the saved links), reported as
+        // finishDetached does (safety review of the S01 fix).
+        if (away && away.failures > 0) {
+            notifyApp(`${away.t.closedFailures(away.failures, away.label)} ${away.firstError}`);
+            away.failures = 0;
+        }
+        // An earlier save stored the names (or a write may have been saved): the copy still makes sure of them.
+        if (away?.copy && away.unknown) away.copy.names.refresh(away.copy.writer);
+        else if (away?.copy && away.namesStored) away.copy.names.refresh(away.copy.writer, true);
+        detached.delete(engine);
+        liveEngines.delete(engine);
+        engine.dispose();
+        bridge.dispose();
+    }
+
+    /**
+     * With the record: a new record's save starts. Its picks are linked once it exists, so the column isn't part of the
+     * create (the form never writes it); it counts as unsaved again if the save is cancelled or fails.
+     */
+    private onNewRecordSave(engine: SyncEngine, args: SaveEventArgs): void {
+        if (this.config?.saveMode !== "withRecord") return;
+        // Also for picks left by an instance that is gone (the field hidden by a rule, see orphans).
+        this.hostField?.markNever(null);
+        if (engine !== this.engine || this.destroyed) {
+            // Those picks as they are now: not what an earlier save carried that never reported (cancelled unseen, see
+            // onNewRecordSaveLate). A save is over once another one starts; this one is under way for the instance that
+            // adopts them (see adoptOrphan).
+            engine.holdForCreate();
+            const orphan = orphanOf.get(engine);
+            if (orphan) orphan.saveDeadline = Date.now() + SAVE_REPORT_MS;
+            return;
+        }
+        const attempt = this.followNewRecordSave(engine);
+        // Only this save's own cancel: a save made again at once (a script) is another attempt (fourth audit CREATE-02).
+        setTimeout(() => {
+            if (attempt === this.newSaveAttempt && args.isDefaultPrevented?.() === true) this.onNewRecordSaveFailed(engine);
+        }, 0);
+    }
+
+    /**
+     * The new record's save under way carries the picks made so far; those made while it is on its way wait for the next
+     * save, as on a saved record (see SyncEngine.holdForCreate). It counts as under way until `deadline` (see
+     * onNewRecordSaveLate; a save taken over from an orphan keeps its own). Returns the attempt (see newSaveAttempt).
+     */
+    private followNewRecordSave(engine: SyncEngine, deadline = Date.now() + SAVE_REPORT_MS): number {
+        engine.holdForCreate();
+        const attempt = ++this.newSaveAttempt;
+        clearTimeout(this.newSaveTimer);
+        const left = deadline - Date.now();
+        this.newSaveInFlight = left > 0;
+        this.newSaveDeadline = deadline;
+        if (left > 0) this.newSaveTimer = setTimeout(() => this.onNewRecordSaveLate(engine, attempt), left);
+        return attempt;
+    }
+
+    /**
+     * A new record's save that has said nothing for SAVE_REPORT_MS (an OnSave handler of the app keeps it waiting, or
+     * cancelled it unseen): it no longer counts as under way, so a change of the picks counts as unsaved again, and a new
+     * save carries them all. What it carried stays noted (fourth audit CREATE-01): if it is reported saved after all,
+     * exactly that is linked, and later changes wait for the next save, as when it reports in time. The picks it carried
+     * don't count as unsaved on their own: it may still be sent, and never with the column (fifth audit, see syncHost).
+     */
+    private onNewRecordSaveLate(engine: SyncEngine, attempt: number): void {
+        if (attempt !== this.newSaveAttempt || engine !== this.engine || this.destroyed || !this.newSaveInFlight || engine.getRecordId()) return;
+        this.newSaveInFlight = false;
+        this.render();
+    }
+
+    private onNewRecordSaveFailed(engine: SyncEngine): void {
+        if (engine !== this.engine || this.destroyed || engine.getRecordId()) return;
+        // (A failure reported after SAVE_REPORT_MS, see onNewRecordSaveLate: what that save carried is let go too.)
+        if (!this.newSaveInFlight && !engine.isHolding()) return;
+        clearTimeout(this.newSaveTimer);
+        this.newSaveInFlight = false;
+        // The record wasn't created: every pick waits for the next save again (see SyncEngine.holdForCreate).
+        engine.stopHolding();
+        this.render();
     }
 
     // ---------------------------------------------------------------- user actions
@@ -1346,6 +2537,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         this.markPeersStale(engine);
         // Changes made on links another instance had changed: read them again once these are written.
         if (this.hostStale) this.scheduleResync();
+        // Waiting for the save: a handler a script added to OnSave since the form loaded runs before the control's, so a
+        // save it cancels writes nothing (see FormBridge.keepSaveHandlerLast).
+        if (this.hold?.engine === engine) this.hold.bridge.keepSaveHandlerLast();
     }
 
     /**
@@ -1358,7 +2552,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
      */
     private holdBackLast(engine: SyncEngine, items: Item[]): Item[] {
         const recordId = engine.getRecordId();
-        if (!recordId || !this.hostField?.isRequired(recordId)) return items;
+        // While changes wait for the record's save, the form's own check covers the column, and a save that replaces the
+        // last value removes it only once its replacement is linked (see SyncEngine.release).
+        if (!recordId || engine.isHolding() || !this.hostField?.isRequired(recordId)) return items;
         const left = this.survivors(recordId, new Set(items.map((item) => item.id))).length;
         if (left > 1) return items;
         const readsAtHold = left === 1 ? this.readsDone : undefined;
@@ -1506,6 +2702,40 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         return held?.size ? items.filter((item) => !held.has(item.id)) : items;
     }
 
+    /**
+     * Between the names in the host column: the "Names separator" of the copies of this field on the page (the same
+     * relationship and column: in the header, on another tab, in a dialog), which share the column and the names copy
+     * and so must agree, or each would put its own text back over the other's. The comma when they all say Comma,
+     * otherwise the semicolon. Those with Copy names decide when there are any: the names copy plug-in reads only
+     * those, and keeps the semicolon too when the forms don't agree.
+     */
+    private namesSeparator(): string {
+        const host = this.hostField;
+        const copies: NToNMultiSelect[] = [this];
+        for (const control of liveControls) {
+            if (control !== this && control.config && control.rel?.schemaName === this.rel?.schemaName && host?.sameColumn(control.hostField)) copies.push(control);
+        }
+        const copying = copies.filter((control) => control.copiesNames());
+        return (copying.length > 0 ? copying : copies).every((control) => control.config?.namesSeparator === COMMA_SEPARATOR) ? COMMA_SEPARATOR : SEPARATOR;
+    }
+
+    /**
+     * The names that a save of a kept state of this field on this form stores (an earlier instance went, see
+     * letGoOfHeld), while that save may still wait for another OnSave handler before it builds its request (see building
+     * in syncHost); undefined when there is none.
+     */
+    private keptSaveNames(recordId: string): string | null | undefined {
+        const key = this.recordKey(recordId);
+        for (const away of detached.values()) {
+            const kept = away.kept;
+            const save = kept && !kept.owner ? (kept.saving ?? kept.lateSaving) : undefined;
+            if (!kept || away.key !== key || save?.names === undefined) continue;
+            const entity = kept.bridge.followedEntity();
+            if (entity && entity === this.bridge?.hostEntity(recordId) && kept.host.sameColumn(this.hostField) && kept.bridge.waitsForSaveHandlers()) return save.names;
+        }
+        return undefined;
+    }
+
     /** The other instances on the page that show the links of `key` (see recordKey). */
     private recordPeers(key: string): NToNMultiSelect[] {
         return [...liveControls].filter((control) => {
@@ -1598,6 +2828,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             searchMode: config.searchMode,
             // A record can't sensibly be linked to itself in a self-referencing relationship.
             excludeId: this.rel?.selfReferencing ? (this.engine?.getRecordId() ?? null) : null,
+            columns: config.listColumns,
         };
     }
 
@@ -1611,6 +2842,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         this.mode = null;
         this.allOptions = [];
         this.allOptionsKeys = [];
+        this.columnsFound = null;
         this.baseOptions = [];
         this.baseNext = null;
         this.shownOptions = [];
@@ -1638,10 +2870,13 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 // One request decides the mode: if everything fits in one page of 500, filter locally from then on.
                 const page = await data.loadOptions(query, "", CLIENT_MODE_LIMIT, null);
                 if (token !== this.initToken || listToken !== this.optionsToken) return;
+                this.columnsFound = page.hasColumns === true;
                 if (!page.nextLink) {
                     this.mode = "client";
                     this.allOptions = page.items;
-                    this.allOptionsKeys = page.items.map((i) => searchKey(i.name));
+                    // With "Search the columns under each option", the text under the name is searched too, as shown.
+                    const searchesDetails = this.config?.listColumns.search === true;
+                    this.allOptionsKeys = page.items.map((i) => searchKey(searchesDetails && i.details ? `${i.name}\n${i.details}` : i.name));
                 } else {
                     this.mode = "server";
                     this.baseOptions = page.items;
@@ -1755,7 +2990,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
     }
 
     private async loadMore(): Promise<void> {
-        if (!this.data || this.mode !== "server" || !this.shownNext || this.loadingMore) return;
+        if (this.destroyed || !this.data || this.mode !== "server" || !this.shownNext || this.loadingMore) return;
         const token = this.searchToken;
         const next = this.shownNext;
         const pageSize = this.shownPageSize;
@@ -1799,8 +3034,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
                 this.renderedRecordId = recordId;
                 this.cachedSelected = engine.selected();
                 this.cachedSaved = recordId ? engine.savedSelected() : [];
-                // Show the "saving" look only for real writes, not for values waiting for a new record's first save.
-                this.cachedPending = recordId ? engine.pendingIds() : new Set<string>();
+                // Show the "saving" look only for real writes, not for values waiting for a new record's first save or for
+                // the record's save (With the record).
+                this.cachedPending = recordId ? engine.writingIds() : new Set<string>();
                 this.cachedHeld = engine.placeHolders();
                 this.cachedOccupied = this.cachedSelected.length + this.cachedHeld.size;
             }
@@ -1832,9 +3068,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         }
         const note = max > 0 ? (maxReached ? t.maxReached(max) : t.maxNote(max)) : null;
 
-        let hint: string | null = null;
-        if (this.offline) hint = t.offline;
-        else if (engine && !engine.getRecordId() && engine.hasPendingChanges() && !this.saveFirst) hint = t.heldHint;
+        // No hint under the field (owner's choice): the field is read-only while offline, and picks held for a save show
+        // as the form's own unsaved changes.
+        const hint: string | null = null;
 
         const canCreate = !!config?.allowCreate && !!this.rel?.targetQuickCreate && !maxReached;
         const fatalError = this.fatalError ?? (this.saveFirst ? t.saveFirst : null);
@@ -1864,6 +3100,7 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
             openOnClick: !!config?.openOnClick,
             openRecords,
             interceptLinks: openRecords && this.opensRecordsInApp(),
+            withDetails: !!config && config.listColumns.source !== "none" && this.columnsFound !== false,
         });
         this.syncHost();
     }
@@ -1901,6 +3138,9 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         // Column security keeps the user from updating the column: it stays as the form shows it, as the field would.
         if (!engine || !this.selectedLoaded || this.fatalError || this.columnLocked()) return;
         const recordId = engine.getRecordId();
+        // With the record: another copy of the field shows the record now, so its changes are saved at once (see
+        // startHolding).
+        if (recordId && this.hold?.engine === engine && this.recordPeers(this.recordKey(recordId)).length > 0) this.stopHolding();
         if (recordId && this.hostStale) return;
         const formSelection = this.config?.formSelection ?? "no";
         const key = recordId ?? "";
@@ -1910,17 +3150,34 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         // record was saved without the names, so the form's refresh after the save finds the same value), and no change
         // is reported: the names coming back as the picks are linked are none either.
         const justSaved = key !== "" && this.hostSyncedFor === "";
-        const linking = justSaved && (engine.hasPendingChanges() || engine.isBusy() || engine.hasUncertain());
+        // (While changes wait for the record's save, only the first save's writes count: held changes aren't linking.)
+        const linking = justSaved && ((engine.isHolding() ? engine.hasReleasedWork() : engine.hasPendingChanges()) || engine.isBusy() || engine.hasUncertain());
         const first = this.hostSyncedFor !== key && !justSaved;
+        // With the record: the changes waiting for the record's save, and the writes once it is saved.
+        const hold = recordId && this.hold?.engine === engine ? this.hold : null;
+        const held = hold ? engine.heldChanges() : null;
+        const waitingForSave = !!held && held.size > 0;
+        // The field was hidden and shown again while a save that its earlier instance held changes for may still build
+        // its request (Async save handler on, see letGoOfHeld): until that save reports, the column stays as that save
+        // is to send it, while it still shows those names and this instance has no change of its own (not after a
+        // Discard, nor once a change is made here; review of the fixes, fourth and fifth rounds).
+        const keptNames = recordId && !waitingForSave ? this.keptSaveNames(recordId) : undefined;
+        if (keptNames !== undefined && host.isDirty(recordId) === true && host.valueOn(recordId) === keptNames) return;
+        const releasing = !!hold && !waitingForSave && !justSaved && engine.hasReleasedWork();
         let items: Item[] | null = recordId ? this.shown(this.cachedSaved) : this.picksOnUnsavedForm();
-        if (recordId && formSelection === "event" && !linking && (items.length > 0 || !host.isRequired(recordId))) {
+        if (waitingForSave || (releasing && formSelection !== "event")) {
+            // The selection as the record's save is to have it: an unsaved change of the form (its own check and its
+            // scripts see it), then while its changes are written.
+            items = this.cachedSelected;
+        } else if (recordId && formSelection === "event" && !linking && (items.length > 0 || !host.isRequired(recordId) || releasing)) {
+            // (While the changes of a save are written, a required column keeps its names too: the save is done.)
             // The saved selection, once nothing is being written and every outcome is known (null: the column keeps what
             // it stands for meanwhile).
             if (!engine.isBusy() && !engine.hasPendingChanges() && !engine.hasUncertain()) items = this.cachedSelected;
             else if (!first) items = null;
         }
         const maxLength = (this.context.parameters.value as unknown as { attributes?: { MaxLength?: number } }).attributes?.MaxLength;
-        const text = items ? namesText(items, maxLength) : this.hostText;
+        const text = items ? namesText(items, maxLength, this.namesSeparator()) : this.hostText;
         const ids = items ? items.map((item) => item.id).sort().join() : this.hostIds;
         const changed = !first && !linking && ids !== this.hostIds;
         if (!linking) {
@@ -1933,7 +3190,34 @@ export class NToNMultiSelect implements ComponentFramework.StandardControl<IInpu
         const waiting = items === null;
         const settled = !linking && !waiting && (justSaved || this.hostWaited);
         this.hostWaited = waiting;
-        host.show(recordId, text, ids, formSelection === "event" ? { changed, first, quiet: first || linking || waiting, linked: settled } : null);
+        let submit: SubmitMode = "never";
+        if (held && waitingForSave) {
+            // Unsaved until the control's own OnSave handler: changes that a save under way carries don't count again
+            // (nor, without Copy names, those of a save that reports late, see lateSaving: the column stays out of it).
+            // With the app's "Async save handler" on, a save that stores the names may still wait for another OnSave
+            // handler and build its request only then: the column stays part of it, with what it carries, until it
+            // reports (review of the fixes, third round).
+            const building = !!hold?.saving && hold.saving.names !== undefined && hold.bridge.waitsForSaveHandlers();
+            const carried = building ? undefined : hold?.saving?.changes ?? (hold && !hold.savesNames ? hold.lateSaving?.changes : undefined);
+            for (const [id, change] of held) {
+                if (carried?.get(id) !== change) {
+                    submit = "dirty";
+                    break;
+                }
+            }
+        } else if (hold?.before && hold.savesNames) {
+            // Write the links = Before, names stored: the save made again once the links are written carries the names.
+            submit = "dirty";
+        } else if (!recordId && this.config?.saveMode === "withRecord" && !this.newSaveInFlight && !(engine.isHolding() && !engine.hasHeldChanges())) {
+            // A new record's picks: unsaved changes of the form until its first save (see onNewRecordSave). Not those that
+            // a first save carries that hasn't said how it went (see onNewRecordSaveLate): it may still wait for an OnSave
+            // handler of the app and then send the column with the record (fifth audit); a change made since counts.
+            submit = "dirty";
+        }
+        // When the names equal the value the form compares the column with (what it read when the record opened, or just
+        // after a save, before the links were written; or the column is too short, or two records share a name), the form
+        // can't show the changes as unsaved: they still wait for the next save, like any other (owner, 2026-11-05).
+        host.show(recordId, text, ids, formSelection === "event" ? { changed, first, quiet: first || linking || waiting, linked: settled } : null, submit);
     }
 
     /**
@@ -1959,6 +3243,18 @@ function sameIds(a: Item[], b: Item[]): boolean {
     return a.every((item, i) => item.id === b[i].id);
 }
 
+/**
+ * The class of the first copy of this bundle on the page whose code is the same as this copy's, when this copy isn't
+ * that one. The platform can load the bundle more than once on a page: when a hidden field is shown again, it adds the
+ * bundle again from another address (measured live, fifth audit SAVE-HANDOFF-01), and each load makes its own
+ * copy of every module. Instances of different copies wouldn't see what the instances of a page share here (the picks a
+ * hidden field leaves on an unsaved record, the save rounds of a form, writes still on their way), so a later copy makes
+ * its instances with the first copy's class (see the constructor). A copy whose class has other code (a newer version
+ * loaded while the page stays open) makes its own instances; one whose changes are all outside the class makes the first
+ * copy's until the page reloads, so the page stays on one build.
+ */
+let firstCopy: typeof NToNMultiSelect | null = null;
+
 // Also expose the constructor as window.KV.NToNMultiSelect and register it by name. The platform normally loads
 // this bundle itself; in environments that send the control to the form without its resources, the form library
 // (formloader.js) loads it instead and checks these to see that the control is ready.
@@ -1966,7 +3262,11 @@ function sameIds(a: Item[], b: Item[]): boolean {
     const w = window as unknown as {
         KV?: Record<string, unknown>;
         ComponentFramework?: { registerControl?: (name: string, ctor: unknown) => void };
-    };
+    } & Record<string, unknown>;
+    const copies = (w[`${CONTROL_NAME} copies`] ??= []) as (typeof NToNMultiSelect)[];
+    const code = NToNMultiSelect.toString();
+    firstCopy = copies.find((copy) => copy !== NToNMultiSelect && copy.toString() === code) ?? null;
+    if (!firstCopy) copies.push(NToNMultiSelect);
     w.KV = w.KV || {};
     w.KV.NToNMultiSelect = NToNMultiSelect;
     try {

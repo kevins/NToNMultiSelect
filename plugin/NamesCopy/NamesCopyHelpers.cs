@@ -9,13 +9,17 @@ using System.Xml.Linq;
 
 namespace NToNMultiSelect.NamesCopy
 {
-    /// <summary>A control on a form that asks for the names copy: its relationship and its host (bound) column.</summary>
+    /// <summary>
+    /// A control on a form that asks for the names copy: its relationship, its host (bound) column, and the separator of
+    /// the names ("Names separator").
+    /// </summary>
     public sealed class CopySetting
     {
-        public CopySetting(string relationshipName, string hostColumn)
+        public CopySetting(string relationshipName, string hostColumn, string separator = NamesCopyHelpers.Separator)
         {
             RelationshipName = relationshipName;
             HostColumn = hostColumn;
+            Separator = separator;
         }
 
         /// <summary>Schema name of the N:N relationship, as typed in the control's settings.</summary>
@@ -23,6 +27,9 @@ namespace NToNMultiSelect.NamesCopy
 
         /// <summary>Logical name of the host column.</summary>
         public string HostColumn { get; }
+
+        /// <summary>Between the names: NamesCopyHelpers.Separator ("; ") or CommaSeparator (", ").</summary>
+        public string Separator { get; }
     }
 
     /// <summary>A linked record: its id and its primary name, or "(No name)" when that is blank.</summary>
@@ -45,8 +52,8 @@ namespace NToNMultiSelect.NamesCopy
 
     /// <summary>
     /// The rules of the names copy that don't need Dataverse: which form controls ask for it, and the text it writes.
-    /// The text is the one the control writes: the names sorted by name, joined with "; ", cut to the column's maximum
-    /// length with "…", and null when nothing is linked.
+    /// The text is the one the control writes: the names sorted by name, joined with "; " (or ", " when the control's
+    /// "Names separator" is Comma), cut to the column's maximum length with "…", and null when nothing is linked.
     /// </summary>
     public static class NamesCopyHelpers
     {
@@ -54,6 +61,9 @@ namespace NToNMultiSelect.NamesCopy
         public const string ControlName = ".NToNMultiSelect";
 
         public const string Separator = "; ";
+
+        /// <summary>The separator when the control's "Names separator" is Comma.</summary>
+        public const string CommaSeparator = ", ";
 
         /// <summary>The name of a linked record without one, as the control shows it in English.</summary>
         public const string NoName = "(No name)";
@@ -74,11 +84,12 @@ namespace NToNMultiSelect.NamesCopy
 
         /// <summary>
         /// The controls of a published form (its formxml) that ask the plug-in for the names copy: N:N Multi-Select of
-        /// any publisher, with a static relationship name and "Copy names into the host column" set to Yes. Each form
-        /// factor has its own copy of the settings; any of them counts. Malformed XML gives nothing. Other parameters
-        /// are ignored.
+        /// any publisher, with a static relationship name and "Copy names into the host column" set to Yes, and the
+        /// separator each one uses ("Names separator": Comma, or the semicolon). Each form factor has its own copy of the
+        /// settings; any of them counts, and the comma only when all of them say Comma. Malformed XML gives nothing.
+        /// Other parameters are ignored.
         /// </summary>
-        public static IList<CopySetting> ParseFormXml(string formXml)
+        public static List<CopySetting> ParseFormXml(string formXml)
         {
             var settings = new List<CopySetting>();
             if (string.IsNullOrEmpty(formXml)) return settings;
@@ -110,9 +121,16 @@ namespace NToNMultiSelect.NamesCopy
                 {
                     continue;
                 }
-                if (!settings.Any(s => string.Equals(s.RelationshipName, relationship, StringComparison.OrdinalIgnoreCase) && s.HostColumn == column))
+                var separator = StaticValue(parameters, "namesSeparator") == "1" ? CommaSeparator : Separator;
+                var known = settings.FindIndex(s => string.Equals(s.RelationshipName, relationship, StringComparison.OrdinalIgnoreCase) && s.HostColumn == column);
+                if (known < 0)
                 {
-                    settings.Add(new CopySetting(relationship, column));
+                    settings.Add(new CopySetting(relationship, column, separator));
+                }
+                else if (settings[known].Separator != separator)
+                {
+                    // Copies of the field that don't agree: the semicolon, as when the setting didn't exist.
+                    settings[known] = new CopySetting(settings[known].RelationshipName, column, Separator);
                 }
             }
             return settings;
@@ -199,23 +217,23 @@ namespace NToNMultiSelect.NamesCopy
         }
 
         /// <summary>
-        /// The text of the copy: the names in order, joined with "; ", cut to `maxLength` with "…" when longer, or null
-        /// when nothing is linked.
+        /// The text of the copy: the names in order, joined with `separator` ("; " unless the control says Comma), cut to
+        /// `maxLength` with "…" when longer, or null when nothing is linked.
         /// </summary>
-        public static string NamesText(IEnumerable<LinkedName> links, int? maxLength)
+        public static string NamesText(IEnumerable<LinkedName> links, int? maxLength, string separator = Separator)
         {
-            return NamesText(links, maxLength, out _);
+            return NamesText(links, maxLength, out _, separator);
         }
 
         /// <summary>
         /// NamesText, and whether the text was cut: then the names after the cut don't show, and other links can give
         /// the same text.
         /// </summary>
-        public static string NamesText(IEnumerable<LinkedName> links, int? maxLength, out bool wasCut)
+        public static string NamesText(IEnumerable<LinkedName> links, int? maxLength, out bool wasCut, string separator = Separator)
         {
             var sorted = links.ToList();
             sorted.Sort(CompareLinks);
-            var value = string.Join(Separator, sorted.Select(link => link.Name));
+            var value = string.Join(separator, sorted.Select(link => link.Name));
             wasCut = maxLength > 0 && value.Length > maxLength;
             if (wasCut)
             {

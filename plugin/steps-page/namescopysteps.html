@@ -16,11 +16,14 @@
   for deletes and renames of that table, instead of for every delete and update in the environment. A new
   step goes into one solution: the unmanaged solution this page is in (normally the solution with the
   plug-in; when the page is in several, the one chosen on the page), otherwise NToNMultiSelectTableSteps,
-  made when needed with the publisher of the solution that contains the plug-in. The page finds its steps
-  by their ids wherever they are, shows which solutions they are in, and never moves them between
-  solutions: that is left to you. Steps that are managed in an environment are left alone: they are
-  changed in development. The page only deletes a step when you remove it: one of its steps put on another
-  message elsewhere is shown as such, and Create leaves that table alone until you have removed its steps.
+  made when needed with the publisher of the solution that contains the plug-in. Where the plug-in comes
+  from a managed solution and the page is in no unmanaged solution (test or production with the managed
+  package), the page creates no steps: they are created in development and deployed with a solution. The
+  page finds its steps by their ids wherever they are, shows which solutions they are in, and never moves
+  them between solutions: that is left to you. Steps that are managed in an environment are left alone:
+  they are changed in development. The page only deletes a step when you remove it: one of its steps put on
+  another message elsewhere is shown as such, and Create leaves that table alone until you have removed its
+  steps.
 -->
 <style>
   :root {
@@ -117,17 +120,21 @@
   const CONTROL_NAME = ".NToNMultiSelect";
   // New steps go into one solution: the unmanaged solution this page is in (found by its own web resource; chosen on the
   // page when it is in several), otherwise (it is only in managed solutions here) a solution of their own, made when
-  // needed.
+  // needed. Where the plug-in itself comes from a managed solution too, no step is created here (see createBlocked).
   const TEMP_SOLUTION = "NToNMultiSelectTableSteps";
+  // Under the buttons where the page creates no steps (see createBlocked).
+  const MANAGED_NOTE = "The plug-in comes from a managed solution here: create the steps in development and deploy them with your solution.";
   // Solutions that hold every unmanaged component.
   const SYSTEM_SOLUTIONS = ["active", "default", "basic"];
-  // The steps this page creates for each linked table: the message and stage each part of the plug-in expects.
+  // The steps this page creates for each linked table: the message and stage each part of the plug-in expects, and
+  // the execution order (rank) among the steps of that message and stage. The Update step copies the name the update
+  // holds when it runs: it runs after the table's own PreOperation steps (most keep rank 1), which may still change it.
   const KINDS = [
-    { key: "find", message: "Delete", stage: 10, label: "Delete 1 of 2 (find linked records)",
+    { key: "find", message: "Delete", stage: 10, rank: 1, label: "Delete 1 of 2 (find linked records)",
       description: "Before a delete of this table, notes the records whose names column holds the name of the record being deleted. Works with step 2 of 2: keep both or neither." },
-    { key: "rebuild", message: "Delete", stage: 40, label: "Delete 2 of 2 (update their names)",
+    { key: "rebuild", message: "Delete", stage: 40, rank: 1, label: "Delete 2 of 2 (update their names)",
       description: "After a delete of this table, writes the names columns of the records step 1 of 2 noted, without the deleted name. Works with step 1 of 2: keep both or neither." },
-    { key: "rename", message: "Update", stage: 20, label: "Update (follow renames)", filtered: true,
+    { key: "rename", message: "Update", stage: 20, rank: 1000, label: "Update (follow renames)", filtered: true,
       description: "Before an update of this table that sets its name, compares the saved name with the new one; when it changes, writes the new name into the names columns of the records linked to it." },
   ];
   const byKey = (key) => KINDS.find((k) => k.key === key);
@@ -194,7 +201,7 @@
   /** An error as an administrator can act on it. */
   function explain(error) {
     if (error.status === 401) return "You are no longer signed in. Reload the page.";
-    if (error.status === 403) return "You do not have the privileges to change plug-in steps or solutions (System Customizer or System Administrator is needed). " + error.message;
+    if (error.status === 403) return "You do not have the privileges to change plug-in steps or solutions (System Administrator is needed). " + error.message;
     return error.message;
   }
 
@@ -341,7 +348,7 @@
    * first and kept only when all of it could be read.
    */
   async function readSteps() {
-    const steps = await all("sdkmessageprocessingsteps?$select=sdkmessageprocessingstepid,name,stage,mode,statecode,filteringattributes,ismanaged&$expand=sdkmessageid($select=name),sdkmessagefilterid($select=primaryobjecttypecode)&$filter=_plugintypeid_value eq " + state.pluginTypeId);
+    const steps = await all("sdkmessageprocessingsteps?$select=sdkmessageprocessingstepid,name,stage,mode,rank,statecode,filteringattributes,ismanaged&$expand=sdkmessageid($select=name),sdkmessagefilterid($select=primaryobjecttypecode)&$filter=_plugintypeid_value eq " + state.pluginTypeId);
     const stepSolutions = new Map();
     for (const step of steps.filter((s) => s.sdkmessagefilterid && s.sdkmessagefilterid.primaryobjecttypecode)) {
       const rows = await all("solutioncomponents?$select=_solutionid_value&$filter=componenttype eq 92 and objectid eq " + step.sdkmessageprocessingstepid);
@@ -392,6 +399,14 @@
       ? { uniqueName: home.uniqueName, id: home.id, managed: false, temp: false }
       : { uniqueName: TEMP_SOLUTION, id: state.temp ? state.temp.id : null, managed: !!(state.temp && state.temp.managed), temp: true };
   }
+
+  /**
+   * Whether Create is off: the plug-in comes from a managed solution and this page is in no unmanaged solution, as in
+   * test or production with the managed package. Steps are created in development and deployed with a solution
+   * (owner, 2026-11-07); a step created here would also have the ids of that deployment and block its import. Remove
+   * still deletes the steps made here before.
+   */
+  const createBlocked = () => state.target.temp && state.pluginManaged;
 
   /** Chooses which of the unmanaged solutions this page is in gets the new steps (kept in this browser). */
   function choose(uniqueName) {
@@ -504,22 +519,26 @@
    * The state of one step of this page: missing, on, off, managed, on another message (changed with another tool:
    * Create can't correct that, see wrongMessages), or with other settings than this page gives it.
    */
-  async function stepState(table, kind, info) {
+  async function stepState(table, kind, info, tableManaged) {
     const step = stepById(await idOf(table, kind));
     if (!step) return { text: "Missing", css: "muted" };
     const message = step.sdkmessageid && step.sdkmessageid.name;
     const same = step.stage === kind.stage && step.mode === 0 && message === kind.message &&
       step.sdkmessagefilterid && step.sdkmessagefilterid.primaryobjecttypecode === table &&
-      (step.filteringattributes || "") === (kind.filtered ? (info && info.nameColumn) || "" : "");
+      (step.filteringattributes || "") === (kind.filtered ? (info && info.nameColumn) || "" : "") &&
+      // A lower execution order than the page's (a step made before the page set it): Create raises it. Not where Create
+      // can't change the step (Create is off here, or a step of the table is managed: Create skips the table): that is
+      // done in development.
+      (createBlocked() || tableManaged || typeof step.rank !== "number" || step.rank >= kind.rank);
     let text = message !== kind.message ? "On " + message + ", not " + kind.message + ": Remove, then Create" :
       !same ? "Other settings: Create updates it" : step.statecode === 0 ? "On" : "Off";
     let css = !same ? "error" : step.statecode === 0 ? "ok" : "muted";
     // Where the step is, wherever it was moved (it is found by its id). A step in no solution (its adding failed) is
-    // the only one Create puts into a solution.
+    // the only one Create puts into a solution (not of a table Create skips: a step of it is managed).
     const solutions = state.stepSolutions.get(step.sdkmessageprocessingstepid) || [];
     let detail = (step.ismanaged ? "Managed, in " : "In ") + (solutions.length ? solutions.join(", ") : "no solution");
     if (step.ismanaged) detail += ": change it in development";
-    else if (!solutions.length && !state.target.managed && message === kind.message) {
+    else if (!solutions.length && !state.target.managed && !createBlocked() && !tableManaged && message === kind.message) {
       detail += ": Create adds it to " + state.target.uniqueName;
       css = "error";
     }
@@ -629,7 +648,7 @@
         entry.from.length ? "Linked through " + entry.from.join(", ") : "No relationship above uses it: its steps can be removed"));
       tr.appendChild(info ? cell(info.nameColumn || "None: names cannot be copied", info.nameColumn ? "" : "error") : cell("Table not found", "error"));
       for (const kind of KINDS) {
-        const s = await stepState(entry.table, kind, info);
+        const s = await stepState(entry.table, kind, info, existing.some((e) => e.step.ismanaged));
         tr.appendChild(cell(s.text, s.css, s.detail));
       }
       tables.appendChild(tr);
@@ -660,9 +679,10 @@
       return option;
     }));
     $("solutionChoice").classList.toggle("hidden", state.homes.length < 2);
-    $("solutionNote").textContent = targetText() +
-      (state.target.temp && state.pluginManaged ? " The plug-in comes from a managed solution here, so this is most likely a test or production environment: the usual way is to create the steps in development and deploy them with the plug-in." : "") +
+    $("solutionNote").textContent = (createBlocked() ? MANAGED_NOTE : targetText()) +
       " Before you uninstall the plug-in, remove the steps made here: they depend on it.";
+    // Create is off where no step is created (see createBlocked); the Remove buttons stay.
+    $("createButton").dataset.locked = createBlocked() ? "1" : "0";
     setBusy(state.busy);
   }
 
@@ -742,12 +762,11 @@
   }
 
   async function createSteps() {
+    // The button is off then (see createBlocked).
+    if (createBlocked()) return log(MANAGED_NOTE, "error");
     const tables = ticked();
     if (!tables.length) return log("Tick the tables first.", "error");
-    let question = "Create or update the Delete and Update steps for: " + tables.join(", ") + "?\n\n" + targetText();
-    if (state.target.temp && state.pluginManaged) {
-      question += "\n\nThe plug-in comes from a managed solution here, so this is probably a test or production environment. The usual way is to create the steps in development and deploy them with the plug-in: steps created here get the same ids, so they would block that import. Create them here anyway?";
-    }
+    const question = "Create or update the Delete and Update steps for: " + tables.join(", ") + "?\n\n" + targetText();
     if (!confirm(question)) return log("Cancelled.");
     await run(async () => {
       // 1. Everything a table needs is checked before anything is written: a table that cannot have all three steps
@@ -779,7 +798,11 @@
       }
       if (!plans.length) return log("Nothing was changed.");
 
-      // 2. The steps, table by table: a table that fails does not stop the others.
+      // 2. NToNMultiSelectTableSteps first, when a step is to go into it: if it can't be made, no step is written (a
+      // step written first would be left in no solution).
+      if (!state.target.managed && !state.target.id && await needsTarget(plans)) await ensureTarget();
+
+      // 3. The steps, table by table: a table that fails does not stop the others.
       for (const plan of plans) {
         try {
           for (const kind of CREATE_ORDER) await writeStep(plan, kind);
@@ -790,6 +813,17 @@
       }
       log("Dataverse uses new or changed steps within a short time.");
     });
+  }
+
+  /** Whether a step of `plans` goes into the solution new steps go into: a new one, or one that is in no solution. */
+  async function needsTarget(plans) {
+    for (const plan of plans) {
+      for (const kind of CREATE_ORDER) {
+        const id = await idOf(plan.table, kind);
+        if (!stepById(id) || !(state.stepSolutions.get(id) || []).length) return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -808,13 +842,20 @@
       description: kind.description,
       stage: kind.stage,
       mode: 0,
-      rank: 1,
+      rank: kind.rank,
       supporteddeployment: 0,
       asyncautodelete: false,
       filteringattributes: kind.filtered ? plan.info.nameColumn : null,
       "sdkmessagefilterid@odata.bind": "/sdkmessagefilters(" + plan.filters[kind.message].id + ")",
     };
-    const existing = await api("GET", "sdkmessageprocessingsteps(" + id + ")?$select=statecode,ismanaged&$expand=sdkmessageid($select=name)", undefined, { allow404: true });
+    const existing = await api("GET", "sdkmessageprocessingsteps(" + id + ")?$select=statecode,ismanaged,rank,_plugintypeid_value&$expand=sdkmessageid($select=name)", undefined, { allow404: true });
+    // A step with this id on another plug-in (changed with another tool) isn't this page's: it is never changed here,
+    // and none of the advice below would fit it.
+    if (existing && String(existing._plugintypeid_value || "").toLowerCase() !== String(state.pluginTypeId).toLowerCase()) {
+      const error = new Error(kind.label + " is registered on another plug-in: delete that step with the Plugin Registration Tool, then Create.");
+      error.final = true;
+      throw error;
+    }
     // Managed steps are never changed here (also when one came with an import since the page read the steps).
     if (existing && existing.ismanaged) throw new Error(kind.label + " comes from a managed solution here: change it in development.");
     // Another message can't be set on a step, and the page doesn't delete it (also when it was changed since the page
@@ -825,6 +866,9 @@
       error.final = true;
       throw error;
     }
+    // An existing step keeps a higher execution order than this page's (an administrator may have set it); a lower one
+    // is raised.
+    if (existing && typeof existing.rank === "number" && existing.rank >= kind.rank) delete fields.rank;
     let what;
     if (existing) {
       await api("PATCH", "sdkmessageprocessingsteps(" + id + ")", fields);
@@ -940,7 +984,7 @@
       // Shown once it is drawn, so that nothing can be clicked before the tables are there.
       await render();
       status.className = "note";
-      status.textContent = "Only System Customizers and System Administrators can create or remove steps.";
+      status.textContent = "Only System Administrators can create or remove steps.";
       $("main").classList.remove("hidden");
     } catch (error) {
       status.className = "warning";
